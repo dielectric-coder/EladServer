@@ -1,3 +1,59 @@
+elad-spectrum (1.0.0-2) bookworm; urgency=medium
+
+  [ Spectrum Display ]
+  * Red tuned frequency marker line with off-screen arrow indicator
+  * Frequency, mode and filter bandwidth overlay (cyan, centered)
+  * Band overlay on frequency axis (green=ham, orange=broadcast, gray=other)
+  * ITU Region 1, 2 and 3 band plan files (JSON)
+  * Adjustable reference level and dynamic range
+  * VFO A/B indicator in spectrum frame label
+
+  [ Waterfall Display ]
+  * Local and UTC time display overlay (top-left and top-right)
+  * Filter bandwidth indicator lines (dashed, red/orange by mode)
+  * Mode-aware bandwidth positioning (USB/LSB/CW/AM/FM/Data)
+  * Orange bandwidth lines for CW resonator modes
+
+  [ CAT Control ]
+  * Filter bandwidth display via RF CAT command
+  * Immediate frequency query on connect
+  * Serial port auto-reconnection on device power cycle
+
+  [ USB Reconnection ]
+  * Automatic detection of USB disconnection
+  * Auto-reconnection with FPGA FIFO re-initialization
+  * libusb context reinitialization for clean state recovery
+  * Stabilization delay for FPGA initialization after power-on
+
+  [ Zoom and Pan ]
+  * Horizontal zoom (1x, 2x, 4x, 8x, 16x) with pan support
+  * Pan step scales with zoom level (one grid line per detent)
+  * SPAN and OFS display in kHz
+
+  [ Raspberry Pi Mode ]
+  * Dual rotary encoder support via libgpiod
+  * Encoder 1: cycle and adjust spectrum/waterfall ref/range
+  * Encoder 2: toggle between zoom and pan modes
+  * Compact parameter display with active parameter highlighting
+  * Dark theme forced in Pi mode, system theme otherwise
+
+  [ Settings ]
+  * Persistent settings saved to ~/.config/elad-spectrum/settings.conf
+  * Debounced auto-save (3 seconds after last change)
+  * Save on exit
+
+  [ UI Polish ]
+  * Colored status indicator (green=connected, gray=disconnected, red=error)
+  * Removed frame borders for cleaner appearance
+  * Right-justified axis labels
+  * Increased font sizes for spectrum and waterfall axes
+
+  [ Packaging ]
+  * Debian package includes band plan files for all three ITU regions
+  * Developer and user documentation
+
+ -- Michel, VE2EXB <ve2exb@mikelachaine.ca>  Sun, 08 Feb 2026 12:36:00 -0500
+
 elad-spectrum (1.0.0-1) bookworm; urgency=medium
 
   * Initial release.
