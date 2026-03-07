@@ -14,11 +14,6 @@
 #define ENCODER2_DT_PIN   6    // Rotation data (B)
 #define ENCODER2_SW_PIN   13   // Push button
 
-// Legacy defines for backward compatibility
-#define ENCODER_CLK_PIN  ENCODER1_CLK_PIN
-#define ENCODER_DT_PIN   ENCODER1_DT_PIN
-#define ENCODER_SW_PIN   ENCODER1_SW_PIN
-
 // Active parameter selection (for parameter encoder)
 typedef enum {
     ENCODER_PARAM_SPECTRUM_REF = 0,    // Spectrum reference level

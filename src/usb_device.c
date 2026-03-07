@@ -26,7 +26,7 @@ struct usb_device {
     uint8_t *transfer_buffers[NUM_TRANSFERS];
     usb_sample_callback_t callback;
     void *callback_user_data;
-    int streaming;
+    atomic_int streaming;
 
     // Disconnection detection
     atomic_int disconnected;
@@ -262,10 +262,10 @@ static void transfer_callback(struct libusb_transfer *transfer) {
     int should_resubmit = 0;
 
     if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
-        if (dev->callback && dev->streaming) {
+        if (dev->callback && atomic_load(&dev->streaming)) {
             dev->callback(transfer->buffer, transfer->actual_length, dev->callback_user_data);
         }
-        should_resubmit = dev->streaming;
+        should_resubmit = atomic_load(&dev->streaming);
     } else if (transfer->status == LIBUSB_TRANSFER_NO_DEVICE ||
                transfer->status == LIBUSB_TRANSFER_STALL ||
                transfer->status == LIBUSB_TRANSFER_ERROR) {
@@ -278,7 +278,7 @@ static void transfer_callback(struct libusb_transfer *transfer) {
         should_resubmit = 0;
     } else if (transfer->status == LIBUSB_TRANSFER_TIMED_OUT) {
         // Timeout - resubmit if still streaming
-        should_resubmit = dev->streaming;
+        should_resubmit = atomic_load(&dev->streaming);
     } else {
         fprintf(stderr, "Transfer error: %d\n", transfer->status);
         should_resubmit = 0;
@@ -303,7 +303,7 @@ static void transfer_callback(struct libusb_transfer *transfer) {
 
 int usb_device_start_streaming(usb_device_t *dev, usb_sample_callback_t callback, void *user_data) {
     if (!dev || !dev->handle) return -1;
-    if (dev->streaming) return 0;
+    if (atomic_load(&dev->streaming)) return 0;
 
     unsigned char buffer[4];
     int res;
@@ -340,7 +340,7 @@ int usb_device_start_streaming(usb_device_t *dev, usb_sample_callback_t callback
     }
     fprintf(stderr, "Streaming enabled\n");
 
-    dev->streaming = 1;
+    atomic_store(&dev->streaming, 1);
     atomic_store(&dev->transfers_pending, 0);
 
     // Allocate and submit transfers
@@ -379,7 +379,7 @@ int usb_device_start_streaming(usb_device_t *dev, usb_sample_callback_t callback
 void usb_device_stop_streaming(usb_device_t *dev) {
     if (!dev) return;
 
-    dev->streaming = 0;
+    atomic_store(&dev->streaming, 0);
 
     // Cancel transfers if device is still connected
     if (!atomic_load(&dev->disconnected)) {

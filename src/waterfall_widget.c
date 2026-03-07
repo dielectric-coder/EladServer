@@ -9,9 +9,7 @@
 struct _WaterfallWidget {
     GtkDrawingArea parent_instance;
 
-    // Waterfall data (ring buffer of spectrum lines)
     GMutex data_mutex;
-    uint8_t *waterfall_data;  // RGB data for each line
     int spectrum_size;
     int num_lines;
     int current_line;  // Index of next line to write
@@ -255,7 +253,6 @@ static void waterfall_widget_finalize(GObject *object) {
     WaterfallWidget *self = WATERFALL_WIDGET(object);
 
     g_mutex_clear(&self->data_mutex);
-    g_free(self->waterfall_data);
     if (self->surface) {
         cairo_surface_destroy(self->surface);
     }
@@ -270,7 +267,6 @@ static void waterfall_widget_class_init(WaterfallWidgetClass *klass) {
 
 static void waterfall_widget_init(WaterfallWidget *self) {
     g_mutex_init(&self->data_mutex);
-    self->waterfall_data = NULL;
     self->spectrum_size = 0;
     self->num_lines = WATERFALL_LINES;
     self->current_line = 0;
@@ -370,9 +366,6 @@ void waterfall_widget_clear(WaterfallWidget *widget) {
     if (!widget) return;
 
     g_mutex_lock(&widget->data_mutex);
-    if (widget->waterfall_data) {
-        memset(widget->waterfall_data, 0, widget->spectrum_size * 3 * widget->num_lines);
-    }
     if (widget->surface) {
         cairo_t *cr = cairo_create(widget->surface);
         cairo_set_source_rgb(cr, 0, 0, 0);
@@ -389,7 +382,7 @@ void waterfall_widget_set_zoom(WaterfallWidget *widget, int zoom_level) {
     if (!widget) return;
     // Clamp to valid zoom levels
     if (zoom_level < 1) zoom_level = 1;
-    if (zoom_level > 8) zoom_level = 8;
+    if (zoom_level > 16) zoom_level = 16;
 
     if (widget->zoom_level != zoom_level) {
         widget->zoom_level = zoom_level;

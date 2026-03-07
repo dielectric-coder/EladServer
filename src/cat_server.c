@@ -115,9 +115,9 @@ static void *client_handler(void *arg) {
                 pthread_mutex_unlock(server->cat_mutex);
 
                 if (resp_len > 0) {
-                    write(fd, response, resp_len);
+                    if (write(fd, response, resp_len) < 0) break;
                 } else {
-                    write(fd, "?;", 2);
+                    if (write(fd, "?;", 2) < 0) break;
                 }
 
                 start = i + 1;
@@ -222,7 +222,7 @@ int cat_server_start(cat_server_t *server, int port) {
 
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(port);
 
     if (bind(server->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {

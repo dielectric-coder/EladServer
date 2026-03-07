@@ -162,9 +162,6 @@ static gboolean encoder_poll_callback(gpointer user_data) {
         if (now - encoder->last_button_time > DEBOUNCE_TIME_MS) {
             encoder->last_button_time = now;
 
-            // Toggle parameter
-            rotary_encoder_toggle_param(encoder);
-
             if (encoder->button_callback) {
                 encoder->button_callback(encoder->button_user_data);
             }

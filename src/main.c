@@ -137,8 +137,6 @@ static int parse_bandwidth_hz(const char *bw_str, int *offset_hz, int *is_resona
 // USB data callback - called from USB thread
 static void usb_data_callback(const uint8_t *data, int length, void *user_data) {
     app_data_t *app_data = (app_data_t *)user_data;
-    (void)length;  // Unused
-
     // Process data through FFT
     if (fft_processor_process(app_data->fft, data, length)) {
         // New spectrum ready - copy to shared buffer
@@ -643,7 +641,7 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
             ".error {"
             "  color: #FF0000;"
             "}";
-        gtk_css_provider_load_from_data(css_provider, css, -1);
+        gtk_css_provider_load_from_string(css_provider, css);
         gtk_style_context_add_provider_for_display(
             gdk_display_get_default(),
             GTK_STYLE_PROVIDER(css_provider),

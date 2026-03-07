@@ -21,7 +21,7 @@ struct _SpectrumWidget {
 
     // Overlay text
     char overlay_freq[32];
-    char overlay_mode[16];
+    char overlay_mode[32];
 
     // Band overlay
     const bandplan_t *bandplan;
@@ -56,7 +56,7 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
     // Note: Use FFT_SIZE constant instead of spectrum_size so bands draw before data arrives
     if (self->bandplan && self->bandplan->count > 0 && self->sample_rate > 0) {
         // Calculate visible frequency range
-        double freq_span = self->sample_rate / self->zoom_level;
+        double freq_span = (double)self->sample_rate / self->zoom_level;
         double hz_per_bin = (double)self->sample_rate / FFT_SIZE;
         double pan_hz = self->pan_offset * hz_per_bin;
         int64_t freq_start = (int64_t)(self->center_freq_hz - freq_span / 2 + pan_hz);
@@ -144,9 +144,9 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
 
     // Draw frequency labels in bottom margin (adjusted for zoom and pan)
     if (self->sample_rate > 0) {
-        double freq_span = self->sample_rate / self->zoom_level;
+        double freq_span = (double)self->sample_rate / self->zoom_level;
         // Calculate pan offset in Hz
-        double hz_per_bin = (double)self->sample_rate / self->spectrum_size;
+        double hz_per_bin = (double)self->sample_rate / FFT_SIZE;
         double pan_hz = self->pan_offset * hz_per_bin;
         double freq_start = self->center_freq_hz - freq_span / 2 + pan_hz;
 
@@ -269,7 +269,7 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
 
     // Draw overlay (frequency and mode) with transparent background - centered in plot area
     if (self->overlay_freq[0] != '\0' || self->overlay_mode[0] != '\0') {
-        char overlay_text[64];
+        char overlay_text[68];
         snprintf(overlay_text, sizeof(overlay_text), "%s  %s",
                  self->overlay_freq[0] ? self->overlay_freq : "",
                  self->overlay_mode[0] ? self->overlay_mode : "");
@@ -405,7 +405,7 @@ void spectrum_widget_set_zoom(SpectrumWidget *widget, int zoom_level) {
     if (!widget) return;
     // Clamp to valid zoom levels
     if (zoom_level < 1) zoom_level = 1;
-    if (zoom_level > 8) zoom_level = 8;
+    if (zoom_level > 16) zoom_level = 16;
     widget->zoom_level = zoom_level;
     gtk_widget_queue_draw(GTK_WIDGET(widget));
 }
