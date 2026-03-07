@@ -84,6 +84,7 @@ typedef struct {
     int window_width;
     int window_height;
     int cat_server_port;
+    char cat_listen_addr[16];  // "any" or empty for localhost
 
     // Settings auto-save
     guint save_timeout_id;
@@ -820,7 +821,8 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
         app_data->cat_server = cat_server_new();
         if (app_data->cat_server) {
             cat_server_set_cat(app_data->cat_server, app_data->cat, &app_data->cat_mutex);
-            if (cat_server_start(app_data->cat_server, app_data->cat_server_port) != 0) {
+            if (cat_server_start(app_data->cat_server, app_data->cat_server_port,
+                                 app_data->cat_listen_addr[0] ? app_data->cat_listen_addr : NULL) != 0) {
                 fprintf(stderr, "CAT server: failed to start on port %d\n", app_data->cat_server_port);
             }
         }
@@ -927,6 +929,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -f, --fullscreen       Start in fullscreen mode\n");
     fprintf(stderr, "  -p, --pi               Set window size to 800x480 (5\" LCD)\n");
     fprintf(stderr, "  -c, --cat-port PORT    Start CAT TCP server on PORT (default: %d)\n", CAT_SERVER_DEFAULT_PORT);
+    fprintf(stderr, "  -l, --cat-listen ADDR  CAT server listen address: localhost (default) or any\n");
     fprintf(stderr, "  -h, --help             Show this help message\n");
 }
 
@@ -966,6 +969,21 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 fprintf(stderr, "Missing port number for -c/--cat-port\n");
+                g_free(new_argv);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--cat-listen") == 0) {
+            if (i + 1 < argc) {
+                const char *addr = argv[++i];
+                if (strcmp(addr, "any") == 0 || strcmp(addr, "localhost") == 0) {
+                    snprintf(app.cat_listen_addr, sizeof(app.cat_listen_addr), "%s", addr);
+                } else {
+                    fprintf(stderr, "Invalid listen address: %s (use 'localhost' or 'any')\n", addr);
+                    g_free(new_argv);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Missing address for -l/--cat-listen\n");
                 g_free(new_argv);
                 return 1;
             }

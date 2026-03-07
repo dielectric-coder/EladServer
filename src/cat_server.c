@@ -15,6 +15,7 @@
 struct cat_server {
     int listen_fd;
     int port;
+    int bind_any;
     atomic_int running;
     pthread_t accept_thread;
 
@@ -147,7 +148,8 @@ static void *client_handler(void *arg) {
 static void *accept_thread_func(void *arg) {
     cat_server_t *server = (cat_server_t *)arg;
 
-    fprintf(stderr, "CAT server: listening on port %d\n", server->port);
+    fprintf(stderr, "CAT server: listening on %s:%d\n",
+            server->bind_any ? "0.0.0.0" : "127.0.0.1", server->port);
 
     while (atomic_load(&server->running)) {
         struct sockaddr_in client_addr;
@@ -204,7 +206,7 @@ static void *accept_thread_func(void *arg) {
     return NULL;
 }
 
-int cat_server_start(cat_server_t *server, int port) {
+int cat_server_start(cat_server_t *server, int port, const char *listen_addr) {
     if (!server || !server->cat || !server->cat_mutex) return -1;
     if (atomic_load(&server->running)) return 0;  // Already running
 
@@ -220,9 +222,12 @@ int cat_server_start(cat_server_t *server, int port) {
     int opt = 1;
     setsockopt(server->listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
+    // Default to localhost; "any" binds to all interfaces
+    server->bind_any = (listen_addr && strcmp(listen_addr, "any") == 0);
+
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_addr.s_addr = server->bind_any ? htonl(INADDR_ANY) : htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(port);
 
     if (bind(server->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {

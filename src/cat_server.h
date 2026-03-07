@@ -20,8 +20,9 @@ void cat_server_free(cat_server_t *server);
 void cat_server_set_cat(cat_server_t *server, cat_control_t *cat, pthread_mutex_t *cat_mutex);
 
 // Start listening on given port (spawns accept thread)
+// listen_addr: NULL or "localhost" for loopback only, "any" for all interfaces
 // Returns 0 on success, -1 on error
-int cat_server_start(cat_server_t *server, int port);
+int cat_server_start(cat_server_t *server, int port, const char *listen_addr);
 
 // Stop server and disconnect all clients
 void cat_server_stop(cat_server_t *server);

@@ -170,6 +170,55 @@ Parameters are controlled via rotary encoders:
 | 8x | 24 kHz | 5.9 Hz/bin |
 | 16x | 12 kHz | 2.9 Hz/bin |
 
+## Remote CAT Control
+
+The application can expose a TCP server for remote CAT command access. By default it listens on **localhost only** (127.0.0.1).
+
+### Command-line Options
+
+```bash
+# Start CAT server on port 4532 (localhost only)
+elad-spectrum -c 4532
+
+# Start CAT server on all interfaces (LAN access)
+elad-spectrum -c 4532 -l any
+```
+
+| Option | Description |
+|--------|-------------|
+| `-c, --cat-port PORT` | Start TCP CAT server on PORT |
+| `-l, --cat-listen ADDR` | Listen address: `localhost` (default) or `any` |
+
+### Testing with netcat
+
+```bash
+echo "IF;" | nc localhost 4532
+```
+
+### Remote Access via SSH
+
+To control the radio from another machine while keeping the server on localhost (recommended):
+
+```bash
+# On the remote machine, create an SSH tunnel:
+ssh -L 4532:localhost:4532 user@radio-host
+
+# Then in another terminal on the remote machine:
+echo "IF;" | nc localhost 4532
+```
+
+This is more secure than using `-l any` since the connection is encrypted and requires SSH authentication.
+
+### Listening on All Interfaces
+
+If you prefer direct LAN access without SSH:
+
+```bash
+elad-spectrum -c 4532 -l any
+```
+
+**Note:** There is no authentication on the CAT server. Anyone on the network can send commands to the radio when using `-l any`. Only use this on trusted networks.
+
 ## Radio Integration
 
 ### Automatic Frequency Tracking

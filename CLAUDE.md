@@ -128,6 +128,7 @@ Display settings are automatically saved and restored on startup.
 Optional TCP server that allows external applications to send/receive raw Kenwood CAT commands over the network, acting as a bidirectional passthrough to the radio's serial port.
 
 - **Enabled via**: `-c PORT` or `--cat-port PORT` CLI option
+- **Listen address**: Localhost only by default; `-l any` for all interfaces
 - **Default**: Disabled (no server started unless `-c` is specified)
 - **Protocol**: Raw Kenwood CAT commands terminated by `;` (e.g., `IF;`, `RF2;`)
 - **Max clients**: 8 concurrent TCP connections
@@ -137,8 +138,11 @@ Optional TCP server that allows external applications to send/receive raw Kenwoo
 ### Usage
 
 ```bash
-# Start with CAT server on default port 4532
+# Start with CAT server on port 4532 (localhost only)
 ./build/elad-spectrum -c 4532
+
+# Start with CAT server accessible from LAN
+./build/elad-spectrum -c 4532 -l any
 
 # Test with netcat
 echo "IF;" | nc localhost 4532
@@ -336,6 +340,7 @@ debian/
 | `-f, --fullscreen` | Start in fullscreen mode |
 | `-p, --pi` | Set window size to 800x480 (5" LCD), enable rotary encoder, use dark theme |
 | `-c, --cat-port PORT` | Start TCP CAT server on PORT (e.g., 4532) |
+| `-l, --cat-listen ADDR` | CAT server listen address: `localhost` (default) or `any` |
 | `-h, --help` | Show help message |
 
 ## Theme

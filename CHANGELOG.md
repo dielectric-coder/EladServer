@@ -20,7 +20,9 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 
-- **TCP CAT server now binds to localhost only** — The CAT command server previously bound to `INADDR_ANY` (all network interfaces) with no authentication, allowing anyone on the network to send CAT commands to the radio. Changed to `INADDR_LOOPBACK` (127.0.0.1) so only local connections are accepted.
+- **TCP CAT server now binds to localhost by default** — The CAT command server previously bound to `INADDR_ANY` (all network interfaces) with no authentication. Changed default to `INADDR_LOOPBACK` (127.0.0.1). Use `-l any` to listen on all interfaces for LAN access.
+
+- **Added `-l, --cat-listen` CLI flag** — Allows choosing between `localhost` (default, secure) and `any` (all interfaces, for LAN access). Remote access via SSH tunneling is documented as the recommended approach.
 
 - **Checked write() return values in CAT server** — Client socket `write()` calls in the CAT server were ignoring return values. Added error checks that close the connection on write failure.
 
