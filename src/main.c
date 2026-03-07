@@ -648,7 +648,7 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
             ".error {"
             "  color: #FF0000;"
             "}";
-        gtk_css_provider_load_from_string(css_provider, css);
+        gtk_css_provider_load_from_data(css_provider, css, -1);
         gtk_style_context_add_provider_for_display(
             gdk_display_get_default(),
             GTK_STYLE_PROVIDER(css_provider),
