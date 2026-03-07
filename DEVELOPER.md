@@ -267,6 +267,7 @@ endif
    - Add `dep = dependency('name')` in `meson.build`
    - Add to `deps` array
    - Add to `debian/control` Build-Depends
+   - Add to `PKGBUILD` depends/makedepends
 
 3. **New Settings:**
    - Add field to `app_settings_t` in `settings.h`

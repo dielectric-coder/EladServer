@@ -61,6 +61,7 @@ This project provides a spectrum analyzer application for the Elad FDM-DUO Softw
 ```
 EladSpectrum/
 ├── meson.build              # Build configuration
+├── PKGBUILD                 # Arch/Manjaro package build
 ├── CLAUDE.md                # Project documentation
 ├── src/
 │   ├── main.c               # GTK4 application entry point
@@ -261,6 +262,18 @@ sudo pacman -S libgpiod              # Manjaro/Arch
 ```bash
 meson setup build
 meson compile -C build
+```
+
+## Arch/Manjaro Package
+
+Build and install using the PKGBUILD:
+
+```bash
+# Install build dependencies
+sudo pacman -S gtk4 libusb fftw json-glib meson ninja
+
+# Build and install
+makepkg -si
 ```
 
 ## Debian Package

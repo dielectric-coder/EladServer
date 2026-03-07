@@ -26,6 +26,14 @@ meson setup build
 meson compile -C build
 ```
 
+**From PKGBUILD (Manjaro/Arch Linux):**
+```bash
+sudo pacman -S gtk4 libusb fftw json-glib meson ninja
+git clone https://github.com/dielectric-coder/EladSpectrum.git
+cd EladSpectrum
+makepkg -si
+```
+
 **From Source (Manjaro/Arch Linux):**
 ```bash
 sudo pacman -S gtk4 libusb fftw json-glib meson ninja
