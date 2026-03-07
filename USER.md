@@ -187,7 +187,22 @@ elad-spectrum -c 4532 -l any
 | Option | Description |
 |--------|-------------|
 | `-c, --cat-port PORT` | Start TCP CAT server on PORT |
+| `-i, --iq-port PORT` | Start TCP IQ streaming server on PORT |
 | `-l, --cat-listen ADDR` | Listen address: `localhost` (default) or `any` |
+
+## IQ Streaming Server
+
+The application can stream raw IQ sample data over TCP for external processing by tools such as **elad-demod** (TUI demodulator).
+
+```bash
+# Start with IQ server on port 4533 and CAT server on port 4532
+elad-spectrum -i 4533 -c 4532
+
+# Start with IQ server accessible from LAN
+elad-spectrum -i 4533 -c 4532 -l any
+```
+
+The IQ server sends a 16-byte header on connection (magic, sample rate, format), then streams continuous raw 32-bit signed IQ pairs at the radio's sample rate (192 kHz). Up to 8 clients can connect simultaneously.
 
 ### Testing with netcat
 

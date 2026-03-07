@@ -20,17 +20,17 @@ Technical documentation for developers working on the Elad Spectrum application.
 │              └───────┬───────┘                                       │
 └──────────────────────┼───────────────────────────────────────────────┘
                        │
-         ┌─────────────┼─────────────┐
-         │             │             │
-         ▼             ▼             ▼
-┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-│ USB Thread  │ │ CAT Control │ │ GPIO Thread │
-│ (libusb)    │ │ (serial)    │ │ (libgpiod)  │
-└──────┬──────┘ └──────┬──────┘ └─────────────┘
-       │               │              (Pi only)
-       ▼               ▼
-┌─────────────┐ ┌─────────────┐
-│ FFT Process │ │ /dev/ttyUSB0│
+         ┌─────────────┼─────────────┬─────────────┐
+         │             │             │             │
+         ▼             ▼             ▼             ▼
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+│ USB Thread  │ │ CAT Control │ │ GPIO Thread │ │  TCP Servers │
+│ (libusb)    │ │ (serial)    │ │ (libgpiod)  │ │ CAT + IQ    │
+└──────┬──────┘ └──────┬──────┘ └─────────────┘ └──────┬──────┘
+       │               │              (Pi only)         │
+       ▼               ▼                                ▼
+┌─────────────┐ ┌─────────────┐                  Network clients
+│ FFT Process │ │ /dev/ttyUSB0│                  (elad-demod, etc.)
 │ (FFTW3)     │ └─────────────┘
 └─────────────┘
        │
@@ -121,6 +121,26 @@ Optional dual encoder support using libgpiod.
 **Encoder 2 (GPIO 5/6/13):** Zoom/Pan control
 - Rotation: Zoom in/out or pan left/right
 - Button: Toggle zoom/pan mode
+
+### Network Server Modules
+
+#### `cat_server.c/h` - TCP CAT Command Server
+Bidirectional passthrough for Kenwood CAT commands over TCP.
+
+- Accepts up to 8 concurrent clients
+- Each client gets a dedicated handler thread
+- Commands are serialized through the shared `cat_mutex`
+- Enabled via `-c PORT` CLI option
+
+#### `iq_server.c/h` - TCP IQ Streaming Server
+Broadcasts raw IQ sample data to network clients for external processing.
+
+- Taps into the USB bulk transfer callback in `main.c`
+- Sends 16-byte header on connection (magic `"ELAD"`, sample rate, format)
+- Streams continuous `int32_t` IQ pairs (8 bytes/sample, little-endian)
+- Accepts up to 8 concurrent clients
+- Clients that can't keep up are disconnected
+- Enabled via `-i PORT` CLI option
 
 ### Signal Processing Modules
 
@@ -340,4 +360,3 @@ G_DEBUG=gc-friendly G_SLICE=always-malloc valgrind ./build/elad-spectrum
 - [ ] Audio interface integration
 - [ ] Frequency markers/annotations
 - [ ] Spectrum recording/playback
-- [ ] Network streaming (UDP/TCP)

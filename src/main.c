@@ -13,6 +13,7 @@
 #include "waterfall_widget.h"
 #include "cat_control.h"
 #include "cat_server.h"
+#include "iq_server.h"
 #include "settings.h"
 #include "bandplan.h"
 #ifdef HAVE_GPIOD
@@ -51,6 +52,7 @@ typedef struct {
     fft_processor_t *fft;
     cat_control_t *cat;
     cat_server_t *cat_server;
+    iq_server_t *iq_server;
     pthread_mutex_t cat_mutex;
 #ifdef HAVE_GPIOD
     rotary_encoder_t *encoder1;       // Parameter control encoder
@@ -84,6 +86,7 @@ typedef struct {
     int window_width;
     int window_height;
     int cat_server_port;
+    int iq_server_port;
     char cat_listen_addr[16];  // "any" or empty for localhost
 
     // Settings auto-save
@@ -138,6 +141,9 @@ static int parse_bandwidth_hz(const char *bw_str, int *offset_hz, int *is_resona
 // USB data callback - called from USB thread
 static void usb_data_callback(const uint8_t *data, int length, void *user_data) {
     app_data_t *app_data = (app_data_t *)user_data;
+    // Broadcast raw IQ to network clients
+    if (app_data->iq_server)
+        iq_server_broadcast(app_data->iq_server, data, length);
     // Process data through FFT
     if (fft_processor_process(app_data->fft, data, length)) {
         // New spectrum ready - copy to shared buffer
@@ -828,6 +834,18 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
         }
     }
 
+    // Start IQ streaming server
+    if (app_data->iq_server_port > 0) {
+        app_data->iq_server = iq_server_new();
+        if (app_data->iq_server) {
+            if (iq_server_start(app_data->iq_server, app_data->iq_server_port,
+                                app_data->cat_listen_addr[0] ? app_data->cat_listen_addr : NULL,
+                                DEFAULT_SAMPLE_RATE) != 0) {
+                fprintf(stderr, "IQ server: failed to start on port %d\n", app_data->iq_server_port);
+            }
+        }
+    }
+
     // Initialize FFT processor
     app_data->fft = fft_processor_new(FFT_SIZE);
     if (!app_data->fft) {
@@ -915,6 +933,7 @@ static void shutdown_app(GtkApplication *gtk_app G_GNUC_UNUSED, gpointer user_da
     rotary_encoder_free(app_data->encoder2);
 #endif
     cat_server_free(app_data->cat_server);
+    iq_server_free(app_data->iq_server);
     fft_processor_free(app_data->fft);
     usb_device_free(app_data->usb);
     cat_control_free(app_data->cat);
@@ -930,6 +949,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -p, --pi               Set window size to 800x480 (5\" LCD)\n");
     fprintf(stderr, "  -c, --cat-port PORT    Start CAT TCP server on PORT (default: %d)\n", CAT_SERVER_DEFAULT_PORT);
     fprintf(stderr, "  -l, --cat-listen ADDR  CAT server listen address: localhost (default) or any\n");
+    fprintf(stderr, "  -i, --iq-port PORT     Start IQ streaming server on PORT\n");
     fprintf(stderr, "  -h, --help             Show this help message\n");
 }
 
@@ -944,6 +964,7 @@ int main(int argc, char *argv[]) {
     app.window_width = 1024;   // Default size
     app.window_height = 768;
     app.cat_server_port = 0;   // Disabled by default
+    app.iq_server_port = 0;    // Disabled by default
 
     // Parse and filter command-line options (before GTK takes over)
     int new_argc = 1;
@@ -984,6 +1005,19 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 fprintf(stderr, "Missing address for -l/--cat-listen\n");
+                g_free(new_argv);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iq-port") == 0) {
+            if (i + 1 < argc) {
+                app.iq_server_port = atoi(argv[++i]);
+                if (app.iq_server_port <= 0 || app.iq_server_port > 65535) {
+                    fprintf(stderr, "Invalid port number: %s\n", argv[i]);
+                    g_free(new_argv);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Missing port number for -i/--iq-port\n");
                 g_free(new_argv);
                 return 1;
             }

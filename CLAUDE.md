@@ -73,6 +73,7 @@ EladSpectrum/
 │   ├── waterfall_widget.c/h # Waterfall display GtkDrawingArea
 │   ├── bandplan.c/h         # Band overlay (loads JSON bandplan)
 │   ├── cat_server.c/h       # TCP CAT command server (remote control)
+│   ├── iq_server.c/h        # TCP IQ streaming server (raw IQ broadcast)
 │   ├── rotary_encoder.c/h   # GPIO rotary encoder (Pi only, optional)
 │   └── settings.c/h         # Settings persistence (load/save to config file)
 ├── resources/
@@ -146,6 +147,42 @@ Optional TCP server that allows external applications to send/receive raw Kenwoo
 
 # Test with netcat
 echo "IF;" | nc localhost 4532
+```
+
+## TCP IQ Streaming Server
+
+Optional TCP server that streams raw IQ sample data to network clients for external processing (demodulation, recording, analysis).
+
+- **Enabled via**: `-i PORT` or `--iq-port PORT` CLI option
+- **Listen address**: Shares `-l` option with CAT server (localhost by default)
+- **Default**: Disabled (no server started unless `-i` is specified)
+- **Max clients**: 8 concurrent TCP connections
+- **Data source**: Taps directly into the USB bulk transfer callback
+
+### Protocol
+
+On connection, the server sends a 16-byte header:
+
+| Offset | Size | Type | Description |
+|--------|------|------|-------------|
+| 0 | 4 | char[4] | Magic: `"ELAD"` |
+| 4 | 4 | uint32 LE | Sample rate (e.g., 192000) |
+| 8 | 4 | uint32 LE | Format (32 = 32-bit signed int) |
+| 12 | 4 | uint32 LE | Reserved (0) |
+
+After the header, the server streams continuous raw IQ data:
+- Format: `int32_t I, int32_t Q` pairs (8 bytes per sample, little-endian)
+- Chunks: 12288 bytes per USB transfer (1536 IQ samples)
+- Clients that can't keep up are disconnected
+
+### Usage
+
+```bash
+# Start with IQ server on port 4533 and CAT server on port 4532
+./build/elad-spectrum -i 4533 -c 4532
+
+# Start with IQ server accessible from LAN
+./build/elad-spectrum -i 4533 -l any
 ```
 
 ## Band Plan Overlay
@@ -340,7 +377,8 @@ debian/
 | `-f, --fullscreen` | Start in fullscreen mode |
 | `-p, --pi` | Set window size to 800x480 (5" LCD), enable rotary encoder, use dark theme |
 | `-c, --cat-port PORT` | Start TCP CAT server on PORT (e.g., 4532) |
-| `-l, --cat-listen ADDR` | CAT server listen address: `localhost` (default) or `any` |
+| `-i, --iq-port PORT` | Start TCP IQ streaming server on PORT (e.g., 4533) |
+| `-l, --cat-listen ADDR` | Server listen address: `localhost` (default) or `any` |
 | `-h, --help` | Show help message |
 
 ## Theme

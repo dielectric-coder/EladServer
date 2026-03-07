@@ -105,6 +105,9 @@ sudo dpkg -i ../elad-spectrum_*.deb
 |--------|-------------|
 | `-f, --fullscreen` | Start in fullscreen mode |
 | `-p, --pi` | Set window size to 800x480 (5" LCD), enable rotary encoder |
+| `-c, --cat-port PORT` | Start TCP CAT server on PORT (e.g., 4532) |
+| `-i, --iq-port PORT` | Start TCP IQ streaming server on PORT (e.g., 4533) |
+| `-l, --cat-listen ADDR` | Server listen address: `localhost` (default) or `any` |
 | `-h, --help` | Show help message |
 
 ### Raspberry Pi Usage
@@ -136,10 +139,20 @@ See `CLAUDE.md` for detailed GPIO pin assignments and usage.
 - USB connection to the radio
 - Serial port access (`/dev/ttyUSB0`) for CAT control
 
+## IQ Streaming
+
+The application can stream raw IQ sample data over TCP for external demodulation and analysis:
+
+```bash
+# Start with IQ server on port 4533 and CAT server on port 4532
+./build/elad-spectrum -i 4533 -c 4532
+```
+
+The companion **elad-demod** TUI application connects to this stream for AM/SSB/CW demodulation with audio output. See the [elad-demod](https://github.com/mikewam/elad-demod) project.
+
 ## Future Features
 
 - **USB Audio to Power Amp HAT** - Pipe USB audio from the radio to a power amplifier HAT, with optional DSP processing
-- **Network Control** - Minimal remote control of the radio via network (TBD)
 
 ## Notes
 

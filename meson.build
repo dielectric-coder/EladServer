@@ -19,6 +19,7 @@ src_files = [
   'src/waterfall_widget.c',
   'src/cat_control.c',
   'src/cat_server.c',
+  'src/iq_server.c',
   'src/settings.c',
   'src/bandplan.c',
 ]

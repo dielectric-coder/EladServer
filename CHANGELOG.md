@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **TCP IQ streaming server** — New `-i PORT` option starts a TCP server that broadcasts raw IQ sample data to network clients. Streams continuous 32-bit signed IQ pairs at the radio's sample rate (192 kHz). Sends a 16-byte header on connection with magic, sample rate, and format info. Supports up to 8 concurrent clients. Used by the companion **elad-demod** TUI demodulator.
+
 ### Bug Fixes
 
 - **Double parameter toggle on encoder button press** — Each button press on encoder 1 advanced the active parameter by two steps instead of one. The rotary encoder poll callback was calling `rotary_encoder_toggle_param()` internally, and then the button callback in main.c toggled it again. Removed the redundant toggle from `rotary_encoder.c`.
