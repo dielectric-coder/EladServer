@@ -18,6 +18,7 @@ src_files = [
   'src/spectrum_widget.c',
   'src/waterfall_widget.c',
   'src/cat_control.c',
+  'src/cat_server.c',
   'src/settings.c',
   'src/bandplan.c',
 ]

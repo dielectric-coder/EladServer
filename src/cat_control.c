@@ -101,15 +101,15 @@ bool cat_control_is_open(cat_control_t *cat) {
     return cat && cat->fd >= 0;
 }
 
-// Send command and read response
-static int cat_command(cat_control_t *cat, const char *cmd, char *response, int response_size) {
+// Send raw command and read response (public API for passthrough)
+int cat_control_raw_command(cat_control_t *cat, const char *cmd, int cmd_len,
+                            char *response, int response_size) {
     if (!cat || cat->fd < 0) return -1;
 
     // Flush input buffer
     tcflush(cat->fd, TCIFLUSH);
 
     // Send command
-    int cmd_len = strlen(cmd);
     int written = write(cat->fd, cmd, cmd_len);
     if (written != cmd_len) {
         return -1;
@@ -139,6 +139,11 @@ static int cat_command(cat_control_t *cat, const char *cmd, char *response, int 
 
     response[total] = '\0';
     return total;
+}
+
+// Send command and read response (internal convenience wrapper)
+static int cat_command(cat_control_t *cat, const char *cmd, char *response, int response_size) {
+    return cat_control_raw_command(cat, cmd, strlen(cmd), response, response_size);
 }
 
 // Filter bandwidth lookup tables from RF CAT command (per ELAD FDM-DUO manual)

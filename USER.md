@@ -7,7 +7,7 @@ A spectrum analyzer and waterfall display for the Elad FDM-DUO SDR transceiver.
 ### Prerequisites
 
 1. **Elad FDM-DUO** transceiver connected via USB
-2. **Linux** system (tested on Ubuntu 24.04 and Raspberry Pi OS)
+2. **Linux** system (tested on Ubuntu 24.04, Manjaro, and Raspberry Pi OS)
 
 ### Installation
 
@@ -17,9 +17,18 @@ sudo dpkg -i elad-spectrum_1.0.0_*.deb
 sudo apt-get install -f  # Install any missing dependencies
 ```
 
-**From Source:**
+**From Source (Debian/Ubuntu):**
 ```bash
 sudo apt install libgtk-4-dev libusb-1.0-0-dev libfftw3-dev libjson-glib-dev meson ninja-build
+git clone https://github.com/dielectric-coder/EladSpectrum.git
+cd EladSpectrum
+meson setup build
+meson compile -C build
+```
+
+**From Source (Manjaro/Arch Linux):**
+```bash
+sudo pacman -S gtk4 libusb fftw json-glib meson ninja
 git clone https://github.com/dielectric-coder/EladSpectrum.git
 cd EladSpectrum
 meson setup build

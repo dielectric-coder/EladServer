@@ -26,6 +26,13 @@ bool cat_control_is_open(cat_control_t *cat);
 // Returns 0 on success, -1 on error
 int cat_control_get_freq_mode(cat_control_t *cat, long *freq_hz, elad_mode_t *mode, int *vfo);
 
+// Send raw CAT command and read response (for external passthrough)
+// cmd/cmd_len: command bytes to send (e.g., "IF;" with len=3)
+// response/response_size: buffer for response
+// Returns number of response bytes, or -1 on error
+int cat_control_raw_command(cat_control_t *cat, const char *cmd, int cmd_len,
+                            char *response, int response_size);
+
 // Read filter bandwidth via RF CAT command
 // mode: current operating mode (needed to send correct RF query)
 // filter_str: output buffer for human-readable filter string (e.g., "2.4k", "500")

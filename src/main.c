@@ -12,6 +12,7 @@
 #include "spectrum_widget.h"
 #include "waterfall_widget.h"
 #include "cat_control.h"
+#include "cat_server.h"
 #include "settings.h"
 #include "bandplan.h"
 #ifdef HAVE_GPIOD
@@ -49,6 +50,8 @@ typedef struct {
     usb_device_t *usb;
     fft_processor_t *fft;
     cat_control_t *cat;
+    cat_server_t *cat_server;
+    pthread_mutex_t cat_mutex;
 #ifdef HAVE_GPIOD
     rotary_encoder_t *encoder1;       // Parameter control encoder
     rotary_encoder_t *encoder2;       // Zoom/pan control encoder
@@ -80,6 +83,7 @@ typedef struct {
     gboolean pi_mode;
     int window_width;
     int window_height;
+    int cat_server_port;
 
     // Settings auto-save
     guint save_timeout_id;
@@ -158,7 +162,9 @@ static void *usb_thread_func(void *user_data) {
             usb_device_close(app_data->usb);
             atomic_store(&app_data->usb_connected, 0);
             // Also close CAT - serial port will be invalid
+            pthread_mutex_lock(&app_data->cat_mutex);
             cat_control_close(app_data->cat);
+            pthread_mutex_unlock(&app_data->cat_mutex);
             usleep(500000);  // Wait 500ms before attempting reconnect
             continue;
         }
@@ -175,9 +181,11 @@ static void *usb_thread_func(void *user_data) {
                 fprintf(stderr, "USB device connected\n");
 
                 // Try to reopen CAT serial port (it may have been recreated)
+                pthread_mutex_lock(&app_data->cat_mutex);
                 if (!cat_control_is_open(app_data->cat)) {
                     cat_control_open(app_data->cat, "/dev/ttyUSB0");
                 }
+                pthread_mutex_unlock(&app_data->cat_mutex);
 
                 // Read current frequency from radio (don't change it)
                 long freq = usb_device_get_frequency(app_data->usb);
@@ -242,66 +250,70 @@ static gboolean refresh_display(gpointer user_data) {
     if (app_data->freq_poll_counter >= 10 && atomic_load(&app_data->usb_connected)) {
         app_data->freq_poll_counter = 0;
 
-        // Read frequency, mode and VFO via CAT serial port
-        long freq;
-        elad_mode_t mode;
-        int vfo;
-        if (cat_control_is_open(app_data->cat) &&
-            cat_control_get_freq_mode(app_data->cat, &freq, &mode, &vfo) == 0) {
+        // Try to lock CAT mutex (don't block GTK main thread if server is using it)
+        if (pthread_mutex_trylock(&app_data->cat_mutex) == 0) {
+            // Read frequency, mode and VFO via CAT serial port
+            long freq;
+            elad_mode_t mode;
+            int vfo;
+            if (cat_control_is_open(app_data->cat) &&
+                cat_control_get_freq_mode(app_data->cat, &freq, &mode, &vfo) == 0) {
 
-            gboolean freq_changed = (freq > 0 && freq != app_data->center_freq_hz);
-            gboolean mode_changed = (mode != app_data->current_mode);
-            gboolean vfo_changed = (vfo != app_data->current_vfo);
+                gboolean freq_changed = (freq > 0 && freq != app_data->center_freq_hz);
+                gboolean mode_changed = (mode != app_data->current_mode);
+                gboolean vfo_changed = (vfo != app_data->current_vfo);
 
-            if (freq_changed) {
-                app_data->center_freq_hz = (int)freq;
+                if (freq_changed) {
+                    app_data->center_freq_hz = (int)freq;
 
-                // Update spectrum display
-                spectrum_widget_set_center_freq(SPECTRUM_WIDGET(app_data->spectrum), app_data->center_freq_hz);
-            }
+                    // Update spectrum display
+                    spectrum_widget_set_center_freq(SPECTRUM_WIDGET(app_data->spectrum), app_data->center_freq_hz);
+                }
 
-            if (mode_changed) {
-                app_data->current_mode = mode;
-            }
+                if (mode_changed) {
+                    app_data->current_mode = mode;
+                }
 
-            if (vfo_changed) {
-                app_data->current_vfo = vfo;
+                if (vfo_changed) {
+                    app_data->current_vfo = vfo;
 
-                // Update spectrum frame label
-                gtk_frame_set_label(GTK_FRAME(app_data->spectrum_frame),
-                                    vfo == 0 ? "VFO A" : "VFO B");
-            }
+                    // Update spectrum frame label
+                    gtk_frame_set_label(GTK_FRAME(app_data->spectrum_frame),
+                                        vfo == 0 ? "VFO A" : "VFO B");
+                }
 
-            // Read filter bandwidth (may have changed even if mode didn't)
-            char filter_str[16] = "";
-            gboolean filter_changed = FALSE;
-            if (cat_control_get_filter_bw(app_data->cat, app_data->current_mode,
-                                          filter_str, sizeof(filter_str)) == 0) {
-                if (strcmp(filter_str, app_data->current_filter) != 0) {
-                    strncpy(app_data->current_filter, filter_str, sizeof(app_data->current_filter) - 1);
-                    app_data->current_filter[sizeof(app_data->current_filter) - 1] = '\0';
-                    filter_changed = TRUE;
+                // Read filter bandwidth (may have changed even if mode didn't)
+                char filter_str[16] = "";
+                gboolean filter_changed = FALSE;
+                if (cat_control_get_filter_bw(app_data->cat, app_data->current_mode,
+                                              filter_str, sizeof(filter_str)) == 0) {
+                    if (strcmp(filter_str, app_data->current_filter) != 0) {
+                        strncpy(app_data->current_filter, filter_str, sizeof(app_data->current_filter) - 1);
+                        app_data->current_filter[sizeof(app_data->current_filter) - 1] = '\0';
+                        filter_changed = TRUE;
+                    }
+                }
+
+                // Update overlay with frequency, mode and filter
+                if (freq_changed || mode_changed || filter_changed) {
+                    char freq_str[32];
+                    char mode_filter_str[32];
+                    snprintf(freq_str, sizeof(freq_str), "%.6f MHz", app_data->center_freq_hz / 1e6);
+                    snprintf(mode_filter_str, sizeof(mode_filter_str), "%s %s",
+                             usb_device_mode_name(app_data->current_mode),
+                             app_data->current_filter);
+                    spectrum_widget_set_overlay(SPECTRUM_WIDGET(app_data->spectrum),
+                                                freq_str, mode_filter_str);
+
+                    // Update waterfall bandwidth lines
+                    int offset_hz = 0;
+                    int is_resonator = 0;
+                    int bw_hz = parse_bandwidth_hz(app_data->current_filter, &offset_hz, &is_resonator);
+                    waterfall_widget_set_bandwidth(WATERFALL_WIDGET(app_data->waterfall),
+                                                   bw_hz, app_data->current_mode, offset_hz, is_resonator);
                 }
             }
-
-            // Update overlay with frequency, mode and filter
-            if (freq_changed || mode_changed || filter_changed) {
-                char freq_str[32];
-                char mode_filter_str[32];
-                snprintf(freq_str, sizeof(freq_str), "%.6f MHz", app_data->center_freq_hz / 1e6);
-                snprintf(mode_filter_str, sizeof(mode_filter_str), "%s %s",
-                         usb_device_mode_name(app_data->current_mode),
-                         app_data->current_filter);
-                spectrum_widget_set_overlay(SPECTRUM_WIDGET(app_data->spectrum),
-                                            freq_str, mode_filter_str);
-
-                // Update waterfall bandwidth lines
-                int offset_hz = 0;
-                int is_resonator = 0;
-                int bw_hz = parse_bandwidth_hz(app_data->current_filter, &offset_hz, &is_resonator);
-                waterfall_widget_set_bandwidth(WATERFALL_WIDGET(app_data->waterfall),
-                                               bw_hz, app_data->current_mode, offset_hz, is_resonator);
-            }
+            pthread_mutex_unlock(&app_data->cat_mutex);
         }
     }
 
@@ -805,6 +817,17 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
         }
     }
 
+    // Start CAT TCP server
+    if (app_data->cat_server_port > 0 && app_data->cat) {
+        app_data->cat_server = cat_server_new();
+        if (app_data->cat_server) {
+            cat_server_set_cat(app_data->cat_server, app_data->cat, &app_data->cat_mutex);
+            if (cat_server_start(app_data->cat_server, app_data->cat_server_port) != 0) {
+                fprintf(stderr, "CAT server: failed to start on port %d\n", app_data->cat_server_port);
+            }
+        }
+    }
+
     // Initialize FFT processor
     app_data->fft = fft_processor_new(FFT_SIZE);
     if (!app_data->fft) {
@@ -891,9 +914,11 @@ static void shutdown_app(GtkApplication *gtk_app G_GNUC_UNUSED, gpointer user_da
     rotary_encoder_free(app_data->encoder1);
     rotary_encoder_free(app_data->encoder2);
 #endif
+    cat_server_free(app_data->cat_server);
     fft_processor_free(app_data->fft);
     usb_device_free(app_data->usb);
     cat_control_free(app_data->cat);
+    pthread_mutex_destroy(&app_data->cat_mutex);
     bandplan_free(&app_data->bandplan);
     g_mutex_clear(&app_data->spectrum_mutex);
 }
@@ -901,20 +926,23 @@ static void shutdown_app(GtkApplication *gtk_app G_GNUC_UNUSED, gpointer user_da
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s [OPTIONS]\n", prog);
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -f, --fullscreen    Start in fullscreen mode\n");
-    fprintf(stderr, "  -p, --pi            Set window size to 800x480 (5\" LCD)\n");
-    fprintf(stderr, "  -h, --help          Show this help message\n");
+    fprintf(stderr, "  -f, --fullscreen       Start in fullscreen mode\n");
+    fprintf(stderr, "  -p, --pi               Set window size to 800x480 (5\" LCD)\n");
+    fprintf(stderr, "  -c, --cat-port PORT    Start CAT TCP server on PORT (default: %d)\n", CAT_SERVER_DEFAULT_PORT);
+    fprintf(stderr, "  -h, --help             Show this help message\n");
 }
 
 int main(int argc, char *argv[]) {
     // Initialize app data
     memset(&app, 0, sizeof(app));
     g_mutex_init(&app.spectrum_mutex);
+    pthread_mutex_init(&app.cat_mutex, NULL);
     app.center_freq_hz = 15300000;  // 15.3 MHz default
     app.fullscreen = FALSE;
     app.pi_mode = FALSE;
     app.window_width = 1024;   // Default size
     app.window_height = 768;
+    app.cat_server_port = 0;   // Disabled by default
 
     // Parse and filter command-line options (before GTK takes over)
     int new_argc = 1;
@@ -930,6 +958,19 @@ int main(int argc, char *argv[]) {
             app.window_width = 800;
             app.window_height = 480;
             // Don't pass to GTK
+        } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--cat-port") == 0) {
+            if (i + 1 < argc) {
+                app.cat_server_port = atoi(argv[++i]);
+                if (app.cat_server_port <= 0 || app.cat_server_port > 65535) {
+                    fprintf(stderr, "Invalid port number: %s\n", argv[i]);
+                    g_free(new_argv);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Missing port number for -c/--cat-port\n");
+                g_free(new_argv);
+                return 1;
+            }
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             g_free(new_argv);

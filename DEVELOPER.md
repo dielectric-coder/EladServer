@@ -235,6 +235,19 @@ INI-style configuration file handling.
 | json-glib-1.0 | Band plan loading | Yes |
 | libgpiod | Rotary encoder | No (Pi only) |
 
+**Install Dependencies:**
+```bash
+# Debian/Ubuntu
+sudo apt install libgtk-4-dev libusb-1.0-0-dev libfftw3-dev libjson-glib-dev meson ninja-build
+
+# Manjaro/Arch Linux
+sudo pacman -S gtk4 libusb fftw json-glib meson ninja
+
+# Raspberry Pi (optional, for rotary encoder support)
+sudo apt install libgpiod-dev        # Debian/Ubuntu
+sudo pacman -S libgpiod              # Manjaro/Arch
+```
+
 **Conditional Compilation:**
 ```meson
 if gpiod_dep.found()

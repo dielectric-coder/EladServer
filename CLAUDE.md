@@ -50,6 +50,7 @@ This project provides a spectrum analyzer application for the Elad FDM-DUO Softw
 - Supported modes: AM, LSB, USB, CW, FM, CW-R
 - Real-time sync with radio tuning, mode, VFO and filter changes
 - Bandwidth indicator lines on waterfall display (dashed vertical lines showing filter edges)
+- TCP CAT command server for remote control by external apps (`-c PORT`)
 
 ### Phase 3: Audio Interface (Planned)
 - Interface with the USB sound card
@@ -70,6 +71,7 @@ EladSpectrum/
 │   ├── spectrum_widget.c/h  # Spectrum display GtkDrawingArea
 │   ├── waterfall_widget.c/h # Waterfall display GtkDrawingArea
 │   ├── bandplan.c/h         # Band overlay (loads JSON bandplan)
+│   ├── cat_server.c/h       # TCP CAT command server (remote control)
 │   ├── rotary_encoder.c/h   # GPIO rotary encoder (Pi only, optional)
 │   └── settings.c/h         # Settings persistence (load/save to config file)
 ├── resources/
@@ -119,6 +121,27 @@ Display settings are automatically saved and restored on startup.
 | waterfall_range | Waterfall dynamic range (dB) | 120.0 |
 | zoom_level | Zoom level (1, 2, 4, 8, 16) | 1 |
 | pan_offset | Pan offset in FFT bins | 0 |
+
+## TCP CAT Command Server
+
+Optional TCP server that allows external applications to send/receive raw Kenwood CAT commands over the network, acting as a bidirectional passthrough to the radio's serial port.
+
+- **Enabled via**: `-c PORT` or `--cat-port PORT` CLI option
+- **Default**: Disabled (no server started unless `-c` is specified)
+- **Protocol**: Raw Kenwood CAT commands terminated by `;` (e.g., `IF;`, `RF2;`)
+- **Max clients**: 8 concurrent TCP connections
+- **Error response**: `?;` sent when radio is disconnected
+- **Thread safety**: Shared `cat_mutex` serializes serial port access between local polling and network clients; local polling uses `trylock` to avoid blocking the GTK main thread
+
+### Usage
+
+```bash
+# Start with CAT server on default port 4532
+./build/elad-spectrum -c 4532
+
+# Test with netcat
+echo "IF;" | nc localhost 4532
+```
 
 ## Band Plan Overlay
 
@@ -225,8 +248,12 @@ Controls horizontal zoom and panning with mode toggle.
 # Debian/Ubuntu
 sudo apt install libgtk-4-dev libusb-1.0-0-dev libfftw3-dev libjson-glib-dev meson ninja-build
 
+# Manjaro/Arch Linux
+sudo pacman -S gtk4 libusb fftw json-glib meson ninja
+
 # Raspberry Pi (optional, for rotary encoder support)
-sudo apt install libgpiod-dev
+sudo apt install libgpiod-dev        # Debian/Ubuntu
+sudo pacman -S libgpiod              # Manjaro/Arch
 ```
 
 ## Build
@@ -295,6 +322,7 @@ debian/
 |--------|-------------|
 | `-f, --fullscreen` | Start in fullscreen mode |
 | `-p, --pi` | Set window size to 800x480 (5" LCD), enable rotary encoder, use dark theme |
+| `-c, --cat-port PORT` | Start TCP CAT server on PORT (e.g., 4532) |
 | `-h, --help` | Show help message |
 
 ## Theme
