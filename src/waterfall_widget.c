@@ -12,12 +12,12 @@ struct _WaterfallWidget {
     GMutex data_mutex;
     int spectrum_size;
     int num_lines;
-    int current_line;  // Index of next line to write
 
-    // Cairo surface for direct rendering
+    // Cairo surface for direct rendering (ring buffer)
     cairo_surface_t *surface;
     int surface_width;
     int surface_height;
+    int top_row;  // Ring buffer: row index of newest line (top of display)
 
     // Display parameters
     float min_db;
@@ -105,6 +105,7 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         self->surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, plot_width, height);
         self->surface_width = plot_width;
         self->surface_height = height;
+        self->top_row = 0;
         // Clear to black
         cairo_t *surface_cr = cairo_create(self->surface);
         cairo_set_source_rgb(surface_cr, 0, 0, 0);
@@ -112,10 +113,29 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         cairo_destroy(surface_cr);
     }
 
-    // Draw the surface at margin offset
+    // Draw the surface as ring buffer: two strips
     if (self->surface) {
-        cairo_set_source_surface(cr, self->surface, MARGIN_LEFT, 0);
+        int surf_h = self->surface_height;
+        int top = self->top_row;
+        int rows_below = surf_h - top;  // Rows from top_row to end of surface
+
+        // First strip: surface rows [top_row .. height-1] → screen top
+        cairo_save(cr);
+        cairo_rectangle(cr, MARGIN_LEFT, 0, plot_width, rows_below);
+        cairo_clip(cr);
+        cairo_set_source_surface(cr, self->surface, MARGIN_LEFT, -top);
         cairo_paint(cr);
+        cairo_restore(cr);
+
+        // Second strip: surface rows [0 .. top_row-1] → screen bottom
+        if (top > 0) {
+            cairo_save(cr);
+            cairo_rectangle(cr, MARGIN_LEFT, rows_below, plot_width, top);
+            cairo_clip(cr);
+            cairo_set_source_surface(cr, self->surface, MARGIN_LEFT, rows_below);
+            cairo_paint(cr);
+            cairo_restore(cr);
+        }
     }
 
     int visible_bins, start_bin;
@@ -293,10 +313,10 @@ static void waterfall_widget_init(WaterfallWidget *self) {
     g_mutex_init(&self->data_mutex);
     self->spectrum_size = 0;
     self->num_lines = WATERFALL_LINES;
-    self->current_line = 0;
     self->surface = NULL;
     self->surface_width = 0;
     self->surface_height = 0;
+    self->top_row = 0;
     self->min_db = -120.0f;
     self->max_db = 0.0f;
     self->zoom_level = 1;
@@ -322,10 +342,14 @@ void waterfall_widget_add_line(WaterfallWidget *widget, const float *spectrum_db
 
     widget->spectrum_size = size;
 
-    // If we have a surface, scroll it down and draw new line at top using direct pixel access
+    // Write new line directly into ring buffer (no memmove needed)
     if (widget->surface) {
-        int width = widget->surface_width;
-        int height = widget->surface_height;
+        int w = widget->surface_width;
+        int h = widget->surface_height;
+
+        // Advance ring buffer: move top_row up (wrapping)
+        widget->top_row = (widget->top_row - 1 + h) % h;
+        int row_idx = widget->top_row;
 
         // Flush any pending Cairo operations
         cairo_surface_flush(widget->surface);
@@ -334,24 +358,19 @@ void waterfall_widget_add_line(WaterfallWidget *widget, const float *spectrum_db
         unsigned char *data = cairo_image_surface_get_data(widget->surface);
         int stride = cairo_image_surface_get_stride(widget->surface);
 
-        // Scroll down: move all rows down by 1 (from bottom to top to avoid overlap)
-        // memmove handles overlapping regions correctly
-        if (height > 1) {
-            memmove(data + stride, data, stride * (height - 1));
-        }
-
-        // Draw new line at top (row 0) - RGB24 format is 0xXXRRGGBB (little-endian: BB GG RR XX)
+        // Draw new line at row_idx - RGB24 format is 0xXXRRGGBB
         float range = widget->max_db - widget->min_db;
         if (range < 1.0f) range = 1.0f;
+        float inv_range = 1.0f / range;
 
         int visible_bins, start_bin;
         calc_visible_range(size, widget->zoom_level, widget->pan_offset,
                            &start_bin, &visible_bins);
 
-        uint32_t *row = (uint32_t *)data;
-        for (int x = 0; x < width; x++) {
+        uint32_t *row = (uint32_t *)(data + row_idx * stride);
+        for (int x = 0; x < w; x++) {
             // Map x to spectrum bin (within zoomed range)
-            int bin = start_bin + (int)((int64_t)x * visible_bins / width);
+            int bin = start_bin + (int)((int64_t)x * visible_bins / w);
             if (bin < 0) bin = 0;
             if (bin >= size) bin = size - 1;
 
@@ -359,7 +378,7 @@ void waterfall_widget_add_line(WaterfallWidget *widget, const float *spectrum_db
             if (db < widget->min_db) db = widget->min_db;
             if (db > widget->max_db) db = widget->max_db;
 
-            float normalized = (db - widget->min_db) / range;
+            float normalized = (db - widget->min_db) * inv_range;
 
             uint8_t r, g, b;
             db_to_color(normalized, &r, &g, &b);
@@ -394,7 +413,7 @@ void waterfall_widget_clear(WaterfallWidget *widget) {
         cairo_paint(cr);
         cairo_destroy(cr);
     }
-    widget->current_line = 0;
+    widget->top_row = 0;
     g_mutex_unlock(&widget->data_mutex);
 
     gtk_widget_queue_draw(GTK_WIDGET(widget));
