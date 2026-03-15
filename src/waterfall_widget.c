@@ -118,13 +118,9 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         cairo_paint(cr);
     }
 
-    // Calculate visible bin range (same as add_line) for bandwidth lines
-    int visible_bins = self->spectrum_size / self->zoom_level;
-    int max_pan = (self->spectrum_size - visible_bins) / 2;
-    int clamped_pan = self->pan_offset;
-    if (clamped_pan < -max_pan) clamped_pan = -max_pan;
-    if (clamped_pan > max_pan) clamped_pan = max_pan;
-    int start_bin = (self->spectrum_size - visible_bins) / 2 + clamped_pan;
+    int visible_bins, start_bin;
+    calc_visible_range(self->spectrum_size, self->zoom_level, self->pan_offset,
+                       &start_bin, &visible_bins);
 
     g_mutex_unlock(&self->data_mutex);
 
@@ -348,13 +344,9 @@ void waterfall_widget_add_line(WaterfallWidget *widget, const float *spectrum_db
         float range = widget->max_db - widget->min_db;
         if (range < 1.0f) range = 1.0f;
 
-        // Calculate visible bin range based on zoom level and pan offset
-        int visible_bins = size / widget->zoom_level;
-        int max_pan = (size - visible_bins) / 2;
-        int clamped_pan = widget->pan_offset;
-        if (clamped_pan < -max_pan) clamped_pan = -max_pan;
-        if (clamped_pan > max_pan) clamped_pan = max_pan;
-        int start_bin = (size - visible_bins) / 2 + clamped_pan;
+        int visible_bins, start_bin;
+        calc_visible_range(size, widget->zoom_level, widget->pan_offset,
+                           &start_bin, &visible_bins);
 
         uint32_t *row = (uint32_t *)data;
         for (int x = 0; x < width; x++) {

@@ -173,63 +173,39 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
 
     // Draw spectrum in plot area (with zoom and pan support)
     if (self->spectrum_db && self->spectrum_size > 0) {
-        // Calculate visible bin range based on zoom level and pan offset
-        int visible_bins = self->spectrum_size / self->zoom_level;
-        int max_pan = (self->spectrum_size - visible_bins) / 2;
-        int clamped_pan = self->pan_offset;
-        if (clamped_pan < -max_pan) clamped_pan = -max_pan;
-        if (clamped_pan > max_pan) clamped_pan = max_pan;
-        int start_bin = (self->spectrum_size - visible_bins) / 2 + clamped_pan;
+        int visible_bins, start_bin;
+        calc_visible_range(self->spectrum_size, self->zoom_level, self->pan_offset,
+                           &start_bin, &visible_bins);
         int end_bin = start_bin + visible_bins;
 
-        // Draw spectrum line (cyan)
-        cairo_set_source_rgb(cr, 0.0, 1.0, 1.0);
-        cairo_set_line_width(cr, 1.0);
+        // Build spectrum path once, then fill and stroke
+        double inv_range = 1.0 / range;
+        double x_scale = (double)plot_width / (visible_bins - 1);
 
-        int first = 1;
+        cairo_new_path(cr);
+        cairo_move_to(cr, plot_x, plot_y + plot_height);
+
         for (int i = start_bin; i < end_bin; i++) {
-            double x = plot_x + (double)(i - start_bin) / (visible_bins - 1) * plot_width;
+            double x = plot_x + (double)(i - start_bin) * x_scale;
             float db = self->spectrum_db[i];
-
-            // Clamp to display range
             if (db < self->min_db) db = self->min_db;
             if (db > self->max_db) db = self->max_db;
-
-            // Convert dB to y coordinate
-            double y = plot_y + (1.0 - (db - self->min_db) / range) * plot_height;
-
-            if (first) {
-                cairo_move_to(cr, x, y);
-                first = 0;
-            } else {
-                cairo_line_to(cr, x, y);
-            }
+            double y = plot_y + (1.0 - (db - self->min_db) * inv_range) * plot_height;
+            cairo_line_to(cr, x, y);
         }
-        cairo_stroke(cr);
 
-        // Fill under the spectrum with transparent cyan
-        cairo_set_source_rgba(cr, 0.0, 1.0, 1.0, 0.2);
-        first = 1;
-        for (int i = start_bin; i < end_bin; i++) {
-            double x = plot_x + (double)(i - start_bin) / (visible_bins - 1) * plot_width;
-            float db = self->spectrum_db[i];
-
-            if (db < self->min_db) db = self->min_db;
-            if (db > self->max_db) db = self->max_db;
-
-            double y = plot_y + (1.0 - (db - self->min_db) / range) * plot_height;
-
-            if (first) {
-                cairo_move_to(cr, x, plot_y + plot_height);
-                cairo_line_to(cr, x, y);
-                first = 0;
-            } else {
-                cairo_line_to(cr, x, y);
-            }
-        }
+        // Close fill path along bottom edge
         cairo_line_to(cr, plot_x + plot_width, plot_y + plot_height);
         cairo_close_path(cr);
-        cairo_fill(cr);
+
+        // Fill with transparent cyan, preserving path
+        cairo_set_source_rgba(cr, 0.0, 1.0, 1.0, 0.2);
+        cairo_fill_preserve(cr);
+
+        // Stroke the spectrum trace in solid cyan
+        cairo_set_source_rgb(cr, 0.0, 1.0, 1.0);
+        cairo_set_line_width(cr, 1.0);
+        cairo_stroke(cr);
 
         // Draw red center frequency marker line or arrow
         int center_bin = self->spectrum_size / 2;
