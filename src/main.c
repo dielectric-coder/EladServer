@@ -107,6 +107,7 @@ typedef struct {
 
     // Demodulator state (from SWLDemodTool via DM command)
     atomic_int demod_bw_hz;       // 0 = inactive
+    atomic_int demod_mode;        // DEMOD_MODE_AM/USB/LSB/CW
     atomic_int_least64_t demod_last_update;  // monotonic timestamp (microseconds)
 } app_data_t;
 
@@ -153,9 +154,10 @@ static int parse_bandwidth_hz(const char *bw_str, int *offset_hz, int *is_resona
 }
 
 // Demodulator status callback - called from CAT server client thread
-static void on_demod_status(int bandwidth_hz, void *user_data) {
+static void on_demod_status(int bandwidth_hz, int mode, void *user_data) {
     app_data_t *app_data = (app_data_t *)user_data;
     atomic_store(&app_data->demod_bw_hz, bandwidth_hz);
+    atomic_store(&app_data->demod_mode, mode);
     atomic_store(&app_data->demod_last_update, g_get_monotonic_time());
 }
 
@@ -366,6 +368,7 @@ static gboolean refresh_display(gpointer user_data) {
     // Update demodulator bandwidth lines (timeout after 5 seconds of no DM updates)
     {
         int demod_bw = atomic_load(&app_data->demod_bw_hz);
+        int demod_mode = atomic_load(&app_data->demod_mode);
         int64_t last_update = atomic_load(&app_data->demod_last_update);
         if (demod_bw > 0 && last_update > 0) {
             int64_t elapsed = g_get_monotonic_time() - last_update;
@@ -374,7 +377,7 @@ static gboolean refresh_display(gpointer user_data) {
                 demod_bw = 0;
             }
         }
-        waterfall_widget_set_demod_bandwidth(WATERFALL_WIDGET(app_data->waterfall), demod_bw);
+        waterfall_widget_set_demod_bandwidth(WATERFALL_WIDGET(app_data->waterfall), demod_bw, demod_mode);
     }
 
     // Check if new spectrum data is available

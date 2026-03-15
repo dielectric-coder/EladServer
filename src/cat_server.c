@@ -138,10 +138,18 @@ static void *client_handler(void *arg) {
                     if (cmd_len == 3) {
                         // "DM;" = demod inactive/disconnect
                         if (server->demod_callback)
-                            server->demod_callback(0, server->demod_user_data);
+                            server->demod_callback(0, DEMOD_MODE_AM, server->demod_user_data);
                     } else if (cmd_len >= 8) {
                         // "DMxx#####;" = mode(2) + bandwidth(5)
-                        // Parse bandwidth (5 digits at offset 4)
+                        // Parse mode code (2 chars at offset 2)
+                        int mode = DEMOD_MODE_AM;
+                        if (buf[start + 2] == 'S' && buf[start + 3] == 'U')
+                            mode = DEMOD_MODE_USB;
+                        else if (buf[start + 2] == 'S' && buf[start + 3] == 'L')
+                            mode = DEMOD_MODE_LSB;
+                        else if (buf[start + 2] == 'C' && buf[start + 3] == 'W')
+                            mode = DEMOD_MODE_CW;
+                        // Parse bandwidth (digits at offset 4)
                         char bw_str[6];
                         int bw_digits = cmd_len - 5;  // subtract "DM" + mode(2) + ";"
                         if (bw_digits > 0 && bw_digits <= 5) {
@@ -149,7 +157,7 @@ static void *client_handler(void *arg) {
                             bw_str[bw_digits] = '\0';
                             int bw = atoi(bw_str);
                             if (bw > 0 && server->demod_callback)
-                                server->demod_callback(bw, server->demod_user_data);
+                                server->demod_callback(bw, mode, server->demod_user_data);
                         }
                     }
                     // Acknowledge

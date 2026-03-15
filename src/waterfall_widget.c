@@ -34,6 +34,7 @@ struct _WaterfallWidget {
 
     // Demodulator bandwidth display (from SWLDemodTool via DM command)
     int demod_bandwidth_hz; // 0 = inactive/hidden
+    int demod_mode;         // DEMOD_MODE_AM/USB/LSB/CW
 };
 
 G_DEFINE_TYPE(WaterfallWidget, waterfall_widget, GTK_TYPE_DRAWING_AREA)
@@ -226,10 +227,32 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         double dashes[] = {6.0, 4.0};
         cairo_set_dash(cr, dashes, 2, 0);
 
-        // Always 2 symmetric lines around center
-        int line_bins[2] = { center_bin - bw_bins / 2, center_bin + bw_bins / 2 };
-        for (int i = 0; i < 2; i++) {
+        // Mode-aware line placement (matches red hardware filter line logic)
+        int line_bins[2] = {-1, -1};
+        int num_lines = 0;
+
+        switch (self->demod_mode) {
+            case 1:  // DEMOD_MODE_USB
+                // USB: single line at upper edge
+                line_bins[0] = center_bin + bw_bins;
+                num_lines = 1;
+                break;
+            case 2:  // DEMOD_MODE_LSB
+                // LSB: single line at lower edge
+                line_bins[0] = center_bin - bw_bins;
+                num_lines = 1;
+                break;
+            default:
+                // AM, CW, etc.: symmetric lines around center
+                line_bins[0] = center_bin - bw_bins / 2;
+                line_bins[1] = center_bin + bw_bins / 2;
+                num_lines = 2;
+                break;
+        }
+
+        for (int i = 0; i < num_lines; i++) {
             int bin = line_bins[i];
+            if (bin < 0) continue;
             if (bin >= start_bin && bin < start_bin + visible_bins) {
                 double x = MARGIN_LEFT + (double)(bin - start_bin) / visible_bins * plot_width;
                 cairo_move_to(cr, x, 0);
@@ -327,6 +350,7 @@ static void waterfall_widget_init(WaterfallWidget *self) {
     self->center_offset_hz = 0;
     self->is_resonator = 0;
     self->demod_bandwidth_hz = 0;
+    self->demod_mode = 0;
 
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(self), waterfall_widget_draw, NULL, NULL);
 }
@@ -459,9 +483,10 @@ void waterfall_widget_set_bandwidth(WaterfallWidget *widget, int bandwidth_hz, i
     widget->is_resonator = is_resonator;
 }
 
-void waterfall_widget_set_demod_bandwidth(WaterfallWidget *widget, int bandwidth_hz) {
+void waterfall_widget_set_demod_bandwidth(WaterfallWidget *widget, int bandwidth_hz, int mode) {
     if (!widget) return;
     widget->demod_bandwidth_hz = bandwidth_hz;
+    widget->demod_mode = mode;
 }
 
 void waterfall_widget_set_sample_rate(WaterfallWidget *widget, int sample_rate) {

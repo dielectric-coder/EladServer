@@ -11,9 +11,16 @@
 
 typedef struct cat_server cat_server_t;
 
+// Demod mode codes for DM command (maps to elad_mode_t-compatible values)
+#define DEMOD_MODE_AM   0   // Symmetric (AM, SAM)
+#define DEMOD_MODE_USB  1   // Upper sideband (USB, RTTY+, PSK31, MFSK16)
+#define DEMOD_MODE_LSB  2   // Lower sideband (LSB, RTTY-)
+#define DEMOD_MODE_CW   3   // CW (symmetric)
+
 // Callback for demodulator status updates (DM command from SWLDemodTool)
 // bandwidth_hz: demodulation bandwidth (0 = demod disconnected/inactive)
-typedef void (*cat_server_demod_callback_t)(int bandwidth_hz, void *user_data);
+// mode: demod mode (DEMOD_MODE_AM/USB/LSB/CW)
+typedef void (*cat_server_demod_callback_t)(int bandwidth_hz, int mode, void *user_data);
 
 // Create CAT TCP server
 cat_server_t *cat_server_new(void);

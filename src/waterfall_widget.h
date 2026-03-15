@@ -42,8 +42,8 @@ void waterfall_widget_set_bandwidth(WaterfallWidget *widget, int bandwidth_hz, i
 
 // Set demodulator bandwidth for drawing yellow indicator lines
 // bandwidth_hz: demodulation bandwidth in Hz (0 to disable)
-// Always draws 2 symmetric lines around center frequency
-void waterfall_widget_set_demod_bandwidth(WaterfallWidget *widget, int bandwidth_hz);
+// mode: DEMOD_MODE_AM/USB/LSB/CW from cat_server.h
+void waterfall_widget_set_demod_bandwidth(WaterfallWidget *widget, int bandwidth_hz, int mode);
 
 // Set sample rate (needed for Hz to bin conversion)
 void waterfall_widget_set_sample_rate(WaterfallWidget *widget, int sample_rate);
