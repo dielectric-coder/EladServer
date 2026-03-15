@@ -151,6 +151,43 @@ Optional TCP server that allows external applications to send/receive raw Kenwoo
 echo "IF;" | nc localhost 4532
 ```
 
+## Demodulator Status Protocol (DM Command)
+
+The CAT server accepts a custom `DM` command from external demodulators (e.g., SWLDemodTool) to report their demodulation bandwidth. When active, yellow dashed vertical lines appear on the waterfall display showing the demod filter edges.
+
+### Command Format
+
+```
+DM<mode><bandwidth>;    Report demodulation bandwidth
+DM;                     Demod inactive/disconnected (clears lines)
+```
+
+- **Mode**: 2-character mode code (`AM`, `SU`, `SL`, `CW`, `CR`, `FM`)
+- **Bandwidth**: Up to 5 digits, bandwidth in Hz (e.g., `05000` for 5 kHz)
+- **Response**: `DM;` (acknowledgment)
+- **Timeout**: Lines auto-clear after 5 seconds of no `DM` updates
+
+### Examples
+
+```bash
+# Report AM demod with 5000 Hz bandwidth
+echo "DMAM05000;" | nc localhost 4532
+
+# Report CW demod with 500 Hz bandwidth
+echo "DMCW00500;" | nc localhost 4532
+
+# Signal demod inactive
+echo "DM;" | nc localhost 4532
+```
+
+### Visual Indicator
+
+| Line Color | Source |
+|------------|--------|
+| Red (dashed) | Radio hardware filter (from CAT RF command) |
+| Orange (dashed) | CW resonator filter (100&1, etc.) |
+| Yellow (dashed) | External demodulator bandwidth (from DM command) |
+
 ## TCP IQ Streaming Server
 
 Optional TCP server that streams raw IQ sample data to network clients for external processing (demodulation, recording, analysis).
@@ -443,8 +480,9 @@ debian/
   - LOCAL HH:MM:SS at top-left
   - UTC HH:MM:SS at top-right
 - **Bandwidth Lines**: Dashed vertical lines on waterfall showing filter edges
-  - Red lines for most modes
+  - Red lines for radio hardware filter (most modes)
   - Orange lines for CW resonator modes (100&1, 100&2, 100&3, 100&4)
+  - Yellow lines for SWLDemodTool demodulation bandwidth (when active)
   - Mode-aware positioning:
     - USB: single line at upper filter edge
     - LSB: single line at lower filter edge

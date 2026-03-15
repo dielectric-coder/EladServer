@@ -27,6 +27,10 @@ struct cat_server {
     int client_fds[CAT_SERVER_MAX_CLIENTS];
     pthread_mutex_t clients_mutex;
     int client_count;
+
+    // Demodulator status callback (DM command)
+    cat_server_demod_callback_t demod_callback;
+    void *demod_user_data;
 };
 
 typedef struct {
@@ -61,6 +65,13 @@ void cat_server_set_cat_client(cat_server_t *server, cat_client_t *client, pthre
     if (!server) return;
     server->cat_client = client;
     server->cat_mutex = cat_mutex;
+}
+
+void cat_server_set_demod_callback(cat_server_t *server,
+                                    cat_server_demod_callback_t callback, void *user_data) {
+    if (!server) return;
+    server->demod_callback = callback;
+    server->demod_user_data = user_data;
 }
 
 static void add_client_fd(cat_server_t *server, int fd) {
@@ -113,6 +124,31 @@ static void *client_handler(void *arg) {
                 int cmd_len = i - start + 1;  // Include the ';'
                 char response[256];
                 int resp_len = -1;
+
+                // Intercept DM (demodulator) command - don't forward to radio
+                if (cmd_len >= 3 && buf[start] == 'D' && buf[start + 1] == 'M') {
+                    if (cmd_len == 3) {
+                        // "DM;" = demod inactive/disconnect
+                        if (server->demod_callback)
+                            server->demod_callback(0, server->demod_user_data);
+                    } else if (cmd_len >= 8) {
+                        // "DMxx#####;" = mode(2) + bandwidth(5)
+                        // Parse bandwidth (5 digits at offset 4)
+                        char bw_str[6];
+                        int bw_digits = cmd_len - 5;  // subtract "DM" + mode(2) + ";"
+                        if (bw_digits > 0 && bw_digits <= 5) {
+                            strncpy(bw_str, buf + start + 4, bw_digits);
+                            bw_str[bw_digits] = '\0';
+                            int bw = atoi(bw_str);
+                            if (bw > 0 && server->demod_callback)
+                                server->demod_callback(bw, server->demod_user_data);
+                        }
+                    }
+                    // Acknowledge
+                    if (write(fd, "DM;", 3) < 0) break;
+                    start = i + 1;
+                    continue;
+                }
 
                 pthread_mutex_lock(server->cat_mutex);
                 if (server->cat && cat_control_is_open(server->cat)) {

@@ -40,6 +40,11 @@ int waterfall_widget_get_pan(WaterfallWidget *widget);
 // is_resonator: true for CW resonator modes (draws orange instead of red)
 void waterfall_widget_set_bandwidth(WaterfallWidget *widget, int bandwidth_hz, int mode, int center_offset_hz, int is_resonator);
 
+// Set demodulator bandwidth for drawing yellow indicator lines
+// bandwidth_hz: demodulation bandwidth in Hz (0 to disable)
+// Always draws 2 symmetric lines around center frequency
+void waterfall_widget_set_demod_bandwidth(WaterfallWidget *widget, int bandwidth_hz);
+
 // Set sample rate (needed for Hz to bin conversion)
 void waterfall_widget_set_sample_rate(WaterfallWidget *widget, int sample_rate);
 

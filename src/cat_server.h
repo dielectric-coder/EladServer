@@ -11,6 +11,10 @@
 
 typedef struct cat_server cat_server_t;
 
+// Callback for demodulator status updates (DM command from SWLDemodTool)
+// bandwidth_hz: demodulation bandwidth (0 = demod disconnected/inactive)
+typedef void (*cat_server_demod_callback_t)(int bandwidth_hz, void *user_data);
+
 // Create CAT TCP server
 cat_server_t *cat_server_new(void);
 
@@ -22,6 +26,10 @@ void cat_server_set_cat(cat_server_t *server, cat_control_t *cat, pthread_mutex_
 
 // Set CAT client (network) and mutex for command forwarding (alternative to set_cat)
 void cat_server_set_cat_client(cat_server_t *server, cat_client_t *client, pthread_mutex_t *cat_mutex);
+
+// Set callback for demodulator status updates (DM command)
+void cat_server_set_demod_callback(cat_server_t *server,
+                                    cat_server_demod_callback_t callback, void *user_data);
 
 // Start listening on given port (spawns accept thread)
 // listen_addr: NULL or "localhost" for loopback only, "any" for all interfaces

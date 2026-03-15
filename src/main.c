@@ -104,6 +104,10 @@ typedef struct {
 
     // Band overlay
     bandplan_t bandplan;
+
+    // Demodulator state (from SWLDemodTool via DM command)
+    atomic_int demod_bw_hz;       // 0 = inactive
+    int64_t demod_last_update;    // monotonic timestamp (microseconds)
 } app_data_t;
 
 static app_data_t app;
@@ -146,6 +150,13 @@ static int parse_bandwidth_hz(const char *bw_str, int *offset_hz, int *is_resona
 
     // Assume Hz if no suffix (values like "500" for CW)
     return (int)value;
+}
+
+// Demodulator status callback - called from CAT server client thread
+static void on_demod_status(int bandwidth_hz, void *user_data) {
+    app_data_t *app_data = (app_data_t *)user_data;
+    atomic_store(&app_data->demod_bw_hz, bandwidth_hz);
+    app_data->demod_last_update = g_get_monotonic_time();
 }
 
 // USB data callback - called from USB thread
@@ -350,6 +361,19 @@ static gboolean refresh_display(gpointer user_data) {
             }
             pthread_mutex_unlock(&app_data->cat_mutex);
         }
+    }
+
+    // Update demodulator bandwidth lines (timeout after 5 seconds of no DM updates)
+    {
+        int demod_bw = atomic_load(&app_data->demod_bw_hz);
+        if (demod_bw > 0 && app_data->demod_last_update > 0) {
+            int64_t elapsed = g_get_monotonic_time() - app_data->demod_last_update;
+            if (elapsed > 5000000) {  // 5 seconds
+                atomic_store(&app_data->demod_bw_hz, 0);
+                demod_bw = 0;
+            }
+        }
+        waterfall_widget_set_demod_bandwidth(WATERFALL_WIDGET(app_data->waterfall), demod_bw);
     }
 
     // Check if new spectrum data is available
@@ -930,6 +954,7 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
             } else {
                 cat_server_set_cat(app_data->cat_server, app_data->cat, &app_data->cat_mutex);
             }
+            cat_server_set_demod_callback(app_data->cat_server, on_demod_status, app_data);
             if (cat_server_start(app_data->cat_server, app_data->cat_server_port,
                                  app_data->cat_listen_addr[0] ? app_data->cat_listen_addr : NULL) != 0) {
                 fprintf(stderr, "CAT server: failed to start on port %d\n", app_data->cat_server_port);

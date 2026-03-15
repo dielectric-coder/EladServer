@@ -31,6 +31,9 @@ struct _WaterfallWidget {
     int sample_rate;        // Sample rate for Hz to bin conversion
     int center_offset_hz;   // Offset from tuned freq (e.g., +1500 for data modes)
     int is_resonator;       // CW resonator mode (100&1, etc.) - draws orange
+
+    // Demodulator bandwidth display (from SWLDemodTool via DM command)
+    int demod_bandwidth_hz; // 0 = inactive/hidden
 };
 
 G_DEFINE_TYPE(WaterfallWidget, waterfall_widget, GTK_TYPE_DRAWING_AREA)
@@ -197,6 +200,31 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         cairo_set_dash(cr, NULL, 0, 0);
     }
 
+    // Draw demodulator bandwidth lines (yellow dashed) if active
+    if (self->demod_bandwidth_hz > 0 && self->sample_rate > 0 && self->spectrum_size > 0) {
+        int center_bin = self->spectrum_size / 2;
+        int bw_bins = (self->demod_bandwidth_hz * self->spectrum_size) / self->sample_rate;
+
+        cairo_set_source_rgb(cr, 1.0, 1.0, 0.0);  // Yellow
+        cairo_set_line_width(cr, 1.5);
+        double dashes[] = {6.0, 4.0};
+        cairo_set_dash(cr, dashes, 2, 0);
+
+        // Always 2 symmetric lines around center
+        int line_bins[2] = { center_bin - bw_bins / 2, center_bin + bw_bins / 2 };
+        for (int i = 0; i < 2; i++) {
+            int bin = line_bins[i];
+            if (bin >= start_bin && bin < start_bin + visible_bins) {
+                double x = MARGIN_LEFT + (double)(bin - start_bin) / visible_bins * plot_width;
+                cairo_move_to(cr, x, 0);
+                cairo_line_to(cr, x, height);
+                cairo_stroke(cr);
+            }
+        }
+
+        cairo_set_dash(cr, NULL, 0, 0);
+    }
+
     // Draw time labels in left margin
     cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, 12);
@@ -282,6 +310,7 @@ static void waterfall_widget_init(WaterfallWidget *self) {
     self->sample_rate = DEFAULT_SAMPLE_RATE;
     self->center_offset_hz = 0;
     self->is_resonator = 0;
+    self->demod_bandwidth_hz = 0;
 
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(self), waterfall_widget_draw, NULL, NULL);
 }
@@ -416,6 +445,11 @@ void waterfall_widget_set_bandwidth(WaterfallWidget *widget, int bandwidth_hz, i
     widget->current_mode = mode;
     widget->center_offset_hz = center_offset_hz;
     widget->is_resonator = is_resonator;
+}
+
+void waterfall_widget_set_demod_bandwidth(WaterfallWidget *widget, int bandwidth_hz) {
+    if (!widget) return;
+    widget->demod_bandwidth_hz = bandwidth_hz;
 }
 
 void waterfall_widget_set_sample_rate(WaterfallWidget *widget, int sample_rate) {

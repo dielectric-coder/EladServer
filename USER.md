@@ -133,7 +133,8 @@ Colored rectangles on the x-axis indicate radio bands:
 #### Waterfall Display
 - **Scrolling spectrogram**: Signal history over time
 - **Time labels**: Local time (left), UTC (right)
-- **Dashed lines**: Filter bandwidth indicators
+- **Red/orange dashed lines**: Radio hardware filter bandwidth
+- **Yellow dashed lines**: SWLDemodTool demodulation bandwidth (when active)
 - **Color scale**: Blue (weak) → Cyan → Green → Yellow → Red (strong)
 
 ### Controls
@@ -281,9 +282,9 @@ The application reads frequency, mode, and VFO selection from the radio via CAT 
 
 ### Filter Bandwidth
 The application shows your current filter bandwidth:
-- **Dashed lines** on waterfall indicate filter edges
-- **Orange lines** for CW resonator filters (100&1, etc.)
-- **Red lines** for other filter types
+- **Red dashed lines** on waterfall indicate radio filter edges
+- **Orange dashed lines** for CW resonator filters (100&1, etc.)
+- **Yellow dashed lines** for SWLDemodTool demodulation bandwidth (appears automatically when SWLDemodTool reports its state via the DM command)
 
 ## Settings
 
