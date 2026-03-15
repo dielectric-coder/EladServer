@@ -20,6 +20,8 @@ src_files = [
   'src/cat_control.c',
   'src/cat_server.c',
   'src/iq_server.c',
+  'src/iq_client.c',
+  'src/cat_client.c',
   'src/settings.c',
   'src/bandplan.c',
 ]

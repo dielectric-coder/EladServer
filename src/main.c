@@ -13,7 +13,9 @@
 #include "waterfall_widget.h"
 #include "cat_control.h"
 #include "cat_server.h"
+#include "cat_client.h"
 #include "iq_server.h"
+#include "iq_client.h"
 #include "settings.h"
 #include "bandplan.h"
 #ifdef HAVE_GPIOD
@@ -88,6 +90,14 @@ typedef struct {
     int cat_server_port;
     int iq_server_port;
     char cat_listen_addr[16];  // "any" or empty for localhost
+
+    // Network input mode (alternative to USB/serial)
+    int iq_input_port;          // 0 = disabled (use USB)
+    char iq_input_host[256];    // default "localhost"
+    iq_client_t *iq_client;
+    int cat_input_port;         // 0 = disabled (use serial)
+    char cat_input_host[256];   // default "localhost"
+    cat_client_t *cat_client;
 
     // Settings auto-save
     guint save_timeout_id;
@@ -240,7 +250,10 @@ static gboolean refresh_display(gpointer user_data) {
     }
 
     // Update status
-    if (atomic_load(&app_data->usb_connected)) {
+    gboolean is_connected = app_data->iq_input_port > 0
+        ? (app_data->iq_client && iq_client_is_connected(app_data->iq_client))
+        : atomic_load(&app_data->usb_connected);
+    if (is_connected) {
         gtk_label_set_text(GTK_LABEL(app_data->status_icon), "●");
         gtk_widget_remove_css_class(GTK_WIDGET(app_data->status_icon), "disconnected");
         gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "connected");
@@ -252,17 +265,27 @@ static gboolean refresh_display(gpointer user_data) {
 
     // Poll frequency and mode from radio every ~10 frames (~300ms)
     app_data->freq_poll_counter++;
-    if (app_data->freq_poll_counter >= 10 && atomic_load(&app_data->usb_connected)) {
+    if (app_data->freq_poll_counter >= 10 && is_connected) {
         app_data->freq_poll_counter = 0;
 
         // Try to lock CAT mutex (don't block GTK main thread if server is using it)
         if (pthread_mutex_trylock(&app_data->cat_mutex) == 0) {
-            // Read frequency, mode and VFO via CAT serial port
+            // Read frequency, mode and VFO via CAT (serial or network)
             long freq;
             elad_mode_t mode;
             int vfo;
-            if (cat_control_is_open(app_data->cat) &&
-                cat_control_get_freq_mode(app_data->cat, &freq, &mode, &vfo) == 0) {
+            int cat_ok = 0;
+            if (app_data->cat_client) {
+                // Try to reconnect if disconnected
+                if (!cat_client_is_connected(app_data->cat_client))
+                    cat_client_connect(app_data->cat_client,
+                                       app_data->cat_input_host, app_data->cat_input_port);
+                if (cat_client_is_connected(app_data->cat_client))
+                    cat_ok = (cat_client_get_freq_mode(app_data->cat_client, &freq, &mode, &vfo) == 0);
+            } else if (cat_control_is_open(app_data->cat)) {
+                cat_ok = (cat_control_get_freq_mode(app_data->cat, &freq, &mode, &vfo) == 0);
+            }
+            if (cat_ok) {
 
                 gboolean freq_changed = (freq > 0 && freq != app_data->center_freq_hz);
                 gboolean mode_changed = (mode != app_data->current_mode);
@@ -290,8 +313,15 @@ static gboolean refresh_display(gpointer user_data) {
                 // Read filter bandwidth (may have changed even if mode didn't)
                 char filter_str[16] = "";
                 gboolean filter_changed = FALSE;
-                if (cat_control_get_filter_bw(app_data->cat, app_data->current_mode,
-                                              filter_str, sizeof(filter_str)) == 0) {
+                int filter_ok = 0;
+                if (app_data->cat_client && cat_client_is_connected(app_data->cat_client)) {
+                    filter_ok = (cat_client_get_filter_bw(app_data->cat_client, app_data->current_mode,
+                                                          filter_str, sizeof(filter_str)) == 0);
+                } else {
+                    filter_ok = (cat_control_get_filter_bw(app_data->cat, app_data->current_mode,
+                                                            filter_str, sizeof(filter_str)) == 0);
+                }
+                if (filter_ok) {
                     if (strcmp(filter_str, app_data->current_filter) != 0) {
                         strncpy(app_data->current_filter, filter_str, sizeof(app_data->current_filter) - 1);
                         app_data->current_filter[sizeof(app_data->current_filter) - 1] = '\0';
@@ -589,11 +619,16 @@ static gboolean on_window_close(GtkWindow *window G_GNUC_UNUSED, gpointer user_d
 #endif
     settings_save(&settings);
 
-    // Signal USB thread to stop
+    // Signal threads to stop
     atomic_store(&app_data->running, 0);
 
-    // Wait for USB thread
-    pthread_join(app_data->usb_thread, NULL);
+    if (app_data->iq_input_port > 0) {
+        // Network mode: stop IQ client
+        iq_client_stop(app_data->iq_client);
+    } else {
+        // Hardware mode: wait for USB thread
+        pthread_join(app_data->usb_thread, NULL);
+    }
 
     return FALSE;  // Allow window to close
 }
@@ -778,16 +813,56 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
     // Add control bar at bottom
     gtk_box_append(GTK_BOX(vbox), hbox);
 
-    // Initialize USB device
-    app_data->usb = usb_device_new();
-    if (!app_data->usb) {
-        fprintf(stderr, "Failed to initialize USB\n");
-        gtk_label_set_text(GTK_LABEL(app_data->status_icon), "✖");
-        gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "error");
+    // Initialize data source (USB hardware or network)
+    if (app_data->iq_input_port > 0) {
+        // Network IQ input mode - no USB device needed
+        fprintf(stderr, "Network mode: IQ from %s:%d\n",
+                app_data->iq_input_host, app_data->iq_input_port);
+    } else {
+        // Hardware mode: initialize USB device
+        app_data->usb = usb_device_new();
+        if (!app_data->usb) {
+            fprintf(stderr, "Failed to initialize USB\n");
+            gtk_label_set_text(GTK_LABEL(app_data->status_icon), "✖");
+            gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "error");
+        }
     }
 
-    // Initialize CAT control
-    app_data->cat = cat_control_new();
+    // Initialize CAT control (serial or network)
+    if (app_data->cat_input_port > 0) {
+        // Network CAT mode
+        app_data->cat_client = cat_client_new();
+        if (app_data->cat_client) {
+            if (cat_client_connect(app_data->cat_client,
+                                   app_data->cat_input_host, app_data->cat_input_port) == 0) {
+                // Query frequency immediately
+                long freq;
+                elad_mode_t mode;
+                int vfo;
+                if (cat_client_get_freq_mode(app_data->cat_client, &freq, &mode, &vfo) == 0) {
+                    if (freq > 0) {
+                        app_data->center_freq_hz = (int)freq;
+                        app_data->current_mode = mode;
+                        app_data->current_vfo = vfo;
+                        spectrum_widget_set_center_freq(SPECTRUM_WIDGET(app_data->spectrum), app_data->center_freq_hz);
+                        char freq_str[32];
+                        snprintf(freq_str, sizeof(freq_str), "%.6f MHz", app_data->center_freq_hz / 1e6);
+                        spectrum_widget_set_overlay(SPECTRUM_WIDGET(app_data->spectrum), freq_str,
+                                                    usb_device_mode_name(app_data->current_mode));
+                        gtk_frame_set_label(GTK_FRAME(app_data->spectrum_frame),
+                                            vfo == 0 ? "VFO A" : "VFO B");
+                        fprintf(stderr, "CAT client: Initial frequency %.6f MHz, mode %s, VFO %c\n",
+                                freq / 1e6, usb_device_mode_name(mode), vfo == 0 ? 'A' : 'B');
+                    }
+                }
+            } else {
+                fprintf(stderr, "CAT client: will retry on next poll\n");
+            }
+        }
+    } else {
+        // Hardware CAT mode: serial port
+        app_data->cat = cat_control_new();
+    }
     if (app_data->cat) {
         if (cat_control_open(app_data->cat, "/dev/ttyUSB0") == 0) {
             // Query frequency immediately on connect
@@ -822,11 +897,15 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
         }
     }
 
-    // Start CAT TCP server
-    if (app_data->cat_server_port > 0 && app_data->cat) {
+    // Start CAT TCP server (re-serves from serial or remote CAT)
+    if (app_data->cat_server_port > 0 && (app_data->cat || app_data->cat_client)) {
         app_data->cat_server = cat_server_new();
         if (app_data->cat_server) {
-            cat_server_set_cat(app_data->cat_server, app_data->cat, &app_data->cat_mutex);
+            if (app_data->cat_client) {
+                cat_server_set_cat_client(app_data->cat_server, app_data->cat_client, &app_data->cat_mutex);
+            } else {
+                cat_server_set_cat(app_data->cat_server, app_data->cat, &app_data->cat_mutex);
+            }
             if (cat_server_start(app_data->cat_server, app_data->cat_server_port,
                                  app_data->cat_listen_addr[0] ? app_data->cat_listen_addr : NULL) != 0) {
                 fprintf(stderr, "CAT server: failed to start on port %d\n", app_data->cat_server_port);
@@ -902,15 +981,29 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
     }
 #endif
 
-    // Start USB thread
+    // Start data source
     atomic_store(&app_data->running, 1);
     atomic_store(&app_data->usb_connected, 0);
     atomic_store(&app_data->spectrum_ready, 0);
 
-    if (pthread_create(&app_data->usb_thread, NULL, usb_thread_func, app_data) != 0) {
-        fprintf(stderr, "Failed to create USB thread\n");
-        gtk_label_set_text(GTK_LABEL(app_data->status_icon), "✖");
-        gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "error");
+    if (app_data->iq_input_port > 0) {
+        // Network mode: start IQ client
+        app_data->iq_client = iq_client_new();
+        if (app_data->iq_client) {
+            if (iq_client_start(app_data->iq_client, app_data->iq_input_host,
+                                app_data->iq_input_port, usb_data_callback, app_data) != 0) {
+                fprintf(stderr, "Failed to start IQ client\n");
+                gtk_label_set_text(GTK_LABEL(app_data->status_icon), "✖");
+                gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "error");
+            }
+        }
+    } else {
+        // Hardware mode: start USB thread
+        if (pthread_create(&app_data->usb_thread, NULL, usb_thread_func, app_data) != 0) {
+            fprintf(stderr, "Failed to create USB thread\n");
+            gtk_label_set_text(GTK_LABEL(app_data->status_icon), "✖");
+            gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "error");
+        }
     }
 
     // Start display refresh timer (~30 FPS)
@@ -934,9 +1027,11 @@ static void shutdown_app(GtkApplication *gtk_app G_GNUC_UNUSED, gpointer user_da
 #endif
     cat_server_free(app_data->cat_server);
     iq_server_free(app_data->iq_server);
+    iq_client_free(app_data->iq_client);
     fft_processor_free(app_data->fft);
     usb_device_free(app_data->usb);
     cat_control_free(app_data->cat);
+    cat_client_free(app_data->cat_client);
     pthread_mutex_destroy(&app_data->cat_mutex);
     bandplan_free(&app_data->bandplan);
     g_mutex_clear(&app_data->spectrum_mutex);
@@ -950,7 +1045,24 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -c, --cat-port PORT    Start CAT TCP server on PORT (default: %d)\n", CAT_SERVER_DEFAULT_PORT);
     fprintf(stderr, "  -l, --cat-listen ADDR  CAT server listen address: localhost (default) or any\n");
     fprintf(stderr, "  -i, --iq-port PORT     Start IQ streaming server on PORT\n");
+    fprintf(stderr, "  -I, --iq-input H:P     Connect to remote IQ server HOST:PORT (replaces USB)\n");
+    fprintf(stderr, "  -C, --cat-input H:P    Connect to remote CAT server HOST:PORT (replaces serial)\n");
     fprintf(stderr, "  -h, --help             Show this help message\n");
+}
+
+// Parse HOST:PORT string. Returns port number, fills host buffer.
+// If no ':' found, treats entire string as port with host="localhost".
+static int parse_host_port(const char *str, char *host, int host_size) {
+    const char *colon = strrchr(str, ':');
+    if (colon && colon != str) {
+        int host_len = (int)(colon - str);
+        if (host_len >= host_size) host_len = host_size - 1;
+        strncpy(host, str, host_len);
+        host[host_len] = '\0';
+        return atoi(colon + 1);
+    }
+    snprintf(host, host_size, "localhost");
+    return atoi(str);
 }
 
 int main(int argc, char *argv[]) {
@@ -1018,6 +1130,34 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 fprintf(stderr, "Missing port number for -i/--iq-port\n");
+                g_free(new_argv);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-I") == 0 || strcmp(argv[i], "--iq-input") == 0) {
+            if (i + 1 < argc) {
+                app.iq_input_port = parse_host_port(argv[++i],
+                    app.iq_input_host, sizeof(app.iq_input_host));
+                if (app.iq_input_port <= 0 || app.iq_input_port > 65535) {
+                    fprintf(stderr, "Invalid IQ input port: %s\n", argv[i]);
+                    g_free(new_argv);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Missing HOST:PORT for -I/--iq-input\n");
+                g_free(new_argv);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "--cat-input") == 0) {
+            if (i + 1 < argc) {
+                app.cat_input_port = parse_host_port(argv[++i],
+                    app.cat_input_host, sizeof(app.cat_input_host));
+                if (app.cat_input_port <= 0 || app.cat_input_port > 65535) {
+                    fprintf(stderr, "Invalid CAT input port: %s\n", argv[i]);
+                    g_free(new_argv);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Missing HOST:PORT for -C/--cat-input\n");
                 g_free(new_argv);
                 return 1;
             }

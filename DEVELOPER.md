@@ -23,20 +23,24 @@ Technical documentation for developers working on the Elad Spectrum application.
          ┌─────────────┼─────────────┬─────────────┐
          │             │             │             │
          ▼             ▼             ▼             ▼
-┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-│ USB Thread  │ │ CAT Control │ │ GPIO Thread │ │  TCP Servers │
-│ (libusb)    │ │ (serial)    │ │ (libgpiod)  │ │ CAT + IQ    │
-└──────┬──────┘ └──────┬──────┘ └─────────────┘ └──────┬──────┘
-       │               │              (Pi only)         │
-       ▼               ▼                                ▼
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────────┐
+│ USB Thread  │ │ CAT Control │ │ GPIO Thread │ │  TCP Servers   │
+│ (libusb)    │ │ (serial)    │ │ (libgpiod)  │ │  CAT + IQ     │
+│  ── OR ──   │ │  ── OR ──   │ └─────────────┘ │   ── AND ──   │
+│ IQ Client   │ │ CAT Client  │   (Pi only)     │  TCP Clients   │
+│ (TCP input) │ │ (TCP input) │                  │  IQ + CAT      │
+└──────┬──────┘ └──────┬──────┘                  └───────┬───────┘
+       │               │                                 │
+       ▼               ▼                                 ▼
 ┌─────────────┐ ┌─────────────┐                  Network clients
-│ FFT Process │ │ /dev/ttyUSB0│                  (elad-demod, etc.)
-│ (FFTW3)     │ └─────────────┘
-└─────────────┘
-       │
+│ FFT Process │ │ /dev/ttyUSB0│                  (SWLDemodTool, etc.)
+│ (FFTW3)     │ │  or remote  │
+└─────────────┘ │  CAT server │
+       │        └─────────────┘
        ▼
   FDM-DUO USB
   Endpoint 0x86
+  or remote IQ server
 ```
 
 ## Module Descriptions
@@ -122,7 +126,7 @@ Optional dual encoder support using libgpiod.
 - Rotation: Zoom in/out or pan left/right
 - Button: Toggle zoom/pan mode
 
-### Network Server Modules
+### Network Modules
 
 #### `cat_server.c/h` - TCP CAT Command Server
 Bidirectional passthrough for Kenwood CAT commands over TCP.
@@ -130,6 +134,7 @@ Bidirectional passthrough for Kenwood CAT commands over TCP.
 - Accepts up to 8 concurrent clients
 - Each client gets a dedicated handler thread
 - Commands are serialized through the shared `cat_mutex`
+- Can forward to either serial `cat_control` or network `cat_client` backend
 - Enabled via `-c PORT` CLI option
 
 #### `iq_server.c/h` - TCP IQ Streaming Server
@@ -141,6 +146,23 @@ Broadcasts raw IQ sample data to network clients for external processing.
 - Accepts up to 8 concurrent clients
 - Clients that can't keep up are disconnected
 - Enabled via `-i PORT` CLI option
+
+#### `iq_client.c/h` - TCP IQ Input Client
+Connects to a remote IQ server and feeds data into the local FFT pipeline.
+
+- Background thread with auto-reconnect (1s retry)
+- Reads ELAD protocol header (magic, sample rate, format)
+- Streams 12288-byte chunks into the same callback as USB bulk transfers
+- Enabled via `-I HOST:PORT` CLI option (replaces USB input)
+
+#### `cat_client.c/h` - TCP CAT Input Client
+Connects to a remote CAT server for frequency/mode polling.
+
+- Synchronous TCP connection (protected by `cat_mutex`)
+- Same command/response protocol as serial CAT (Kenwood TS-480)
+- Implements `get_freq_mode()` and `get_filter_bw()` with same parsing
+- Auto-reconnects on polling cycle if disconnected
+- Enabled via `-C HOST:PORT` CLI option (replaces serial input)
 
 ### Signal Processing Modules
 
@@ -224,12 +246,13 @@ INI-style configuration file handling.
 
 ```
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│    Main Thread   │     │    USB Thread    │     │   GPIO Thread    │
-│    (GTK4 UI)     │     │   (libusb)       │     │   (Pi only)      │
+│    Main Thread   │     │  USB Thread OR   │     │   GPIO Thread    │
+│    (GTK4 UI)     │     │  IQ Client Thread│     │   (Pi only)      │
 ├──────────────────┤     ├──────────────────┤     ├──────────────────┤
 │ • Event loop     │     │ • Bulk transfers │     │ • Poll encoders  │
-│ • Display update │     │ • FFT processing │     │ • Debounce       │
-│ • CAT polling    │◄────│ • Data callback  │     │ • Callbacks      │
+│ • Display update │     │   or TCP recv    │     │ • Debounce       │
+│ • CAT polling    │◄────│ • FFT processing │     │ • Callbacks      │
+│   (serial or TCP)│     │ • Data callback  │     │                  │
 │ • Settings save  │     │ • Reconnection   │     │                  │
 └──────────────────┘     └──────────────────┘     └──────────────────┘
          ▲                        │

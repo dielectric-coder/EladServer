@@ -20,6 +20,7 @@ struct cat_server {
     pthread_t accept_thread;
 
     cat_control_t *cat;
+    cat_client_t *cat_client;
     pthread_mutex_t *cat_mutex;
 
     // Track client sockets for shutdown
@@ -53,6 +54,12 @@ void cat_server_free(cat_server_t *server) {
 void cat_server_set_cat(cat_server_t *server, cat_control_t *cat, pthread_mutex_t *cat_mutex) {
     if (!server) return;
     server->cat = cat;
+    server->cat_mutex = cat_mutex;
+}
+
+void cat_server_set_cat_client(cat_server_t *server, cat_client_t *client, pthread_mutex_t *cat_mutex) {
+    if (!server) return;
+    server->cat_client = client;
     server->cat_mutex = cat_mutex;
 }
 
@@ -108,10 +115,14 @@ static void *client_handler(void *arg) {
                 int resp_len = -1;
 
                 pthread_mutex_lock(server->cat_mutex);
-                if (cat_control_is_open(server->cat)) {
+                if (server->cat && cat_control_is_open(server->cat)) {
                     resp_len = cat_control_raw_command(server->cat,
                                                        buf + start, cmd_len,
                                                        response, sizeof(response));
+                } else if (server->cat_client && cat_client_is_connected(server->cat_client)) {
+                    resp_len = cat_client_raw_command(server->cat_client,
+                                                      buf + start, cmd_len,
+                                                      response, sizeof(response));
                 }
                 pthread_mutex_unlock(server->cat_mutex);
 
@@ -207,7 +218,7 @@ static void *accept_thread_func(void *arg) {
 }
 
 int cat_server_start(cat_server_t *server, int port, const char *listen_addr) {
-    if (!server || !server->cat || !server->cat_mutex) return -1;
+    if (!server || (!server->cat && !server->cat_client) || !server->cat_mutex) return -1;
     if (atomic_load(&server->running)) return 0;  // Already running
 
     server->port = port;

@@ -73,7 +73,9 @@ EladSpectrum/
 │   ├── waterfall_widget.c/h # Waterfall display GtkDrawingArea
 │   ├── bandplan.c/h         # Band overlay (loads JSON bandplan)
 │   ├── cat_server.c/h       # TCP CAT command server (remote control)
+│   ├── cat_client.c/h       # TCP CAT client (connects to remote CAT server)
 │   ├── iq_server.c/h        # TCP IQ streaming server (raw IQ broadcast)
+│   ├── iq_client.c/h        # TCP IQ client (connects to remote IQ server)
 │   ├── rotary_encoder.c/h   # GPIO rotary encoder (Pi only, optional)
 │   └── settings.c/h         # Settings persistence (load/save to config file)
 ├── resources/
@@ -184,6 +186,42 @@ After the header, the server streams continuous raw IQ data:
 # Start with IQ server accessible from LAN
 ./build/elad-spectrum -i 4533 -l any
 ```
+
+## Network Input Mode
+
+EladSpectrum can operate in two modes:
+
+| | **Hardware mode** (default) | **Network mode** (`-I`) |
+|---|---|---|
+| **IQ source** | USB bulk transfers | TCP client to remote IQ server |
+| **CAT source** | Serial port `/dev/ttyUSB0` | TCP client to remote CAT server |
+| **IQ serve** | `-i PORT` (optional) | `-i PORT` re-serves received IQ |
+| **CAT serve** | `-c PORT` (optional) | `-c PORT` re-serves received CAT |
+
+Network mode allows EladSpectrum to act as a remote display and relay, receiving IQ and CAT data from another EladSpectrum instance (or any server using the ELAD IQ protocol).
+
+### Usage
+
+```bash
+# Connect to remote IQ server only (no CAT)
+./build/elad-spectrum -I localhost:4533
+
+# Connect to both remote IQ and CAT servers
+./build/elad-spectrum -I localhost:4533 -C localhost:4532
+
+# Connect to remote and re-serve locally (chaining)
+./build/elad-spectrum -I 192.168.1.10:4533 -C 192.168.1.10:4532 -i 4534 -c 4535
+
+# Remote host with different IQ and CAT hosts
+./build/elad-spectrum -I iq-server:4533 -C cat-server:4532
+```
+
+### Behavior
+
+- **IQ client** (`-I`): Background thread connects to remote IQ server, reads ELAD protocol header, then streams 12288-byte chunks into the FFT pipeline. Auto-reconnects on disconnect (1s retry).
+- **CAT client** (`-C`): Synchronous TCP connection replacing serial port. Sends Kenwood CAT commands and reads responses. Auto-reconnects on polling cycle if disconnected.
+- **Re-serving**: When combined with `-i` and/or `-c`, received data is re-served to local clients, enabling chaining: `Radio → Instance1 -i/-c → Instance2 -I/-C → SWLDemodTool`.
+- **Status indicator**: Shows green when IQ client is connected, gray when disconnected.
 
 ## Band Plan Overlay
 
@@ -378,6 +416,8 @@ debian/
 | `-p, --pi` | Set window size to 800x480 (5" LCD), enable rotary encoder, use dark theme |
 | `-c, --cat-port PORT` | Start TCP CAT server on PORT (e.g., 4532) |
 | `-i, --iq-port PORT` | Start TCP IQ streaming server on PORT (e.g., 4533) |
+| `-I, --iq-input HOST:PORT` | Connect to remote IQ server (replaces USB input) |
+| `-C, --cat-input HOST:PORT` | Connect to remote CAT server (replaces serial) |
 | `-l, --cat-listen ADDR` | Server listen address: `localhost` (default) or `any` |
 | `-h, --help` | Show help message |
 

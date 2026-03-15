@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include "cat_control.h"
+#include "cat_client.h"
 
 #define CAT_SERVER_DEFAULT_PORT 4532
 #define CAT_SERVER_MAX_CLIENTS 8
@@ -16,8 +17,11 @@ cat_server_t *cat_server_new(void);
 // Free CAT server
 void cat_server_free(cat_server_t *server);
 
-// Set CAT control and mutex for serial port access
+// Set CAT control (serial) and mutex for command forwarding
 void cat_server_set_cat(cat_server_t *server, cat_control_t *cat, pthread_mutex_t *cat_mutex);
+
+// Set CAT client (network) and mutex for command forwarding (alternative to set_cat)
+void cat_server_set_cat_client(cat_server_t *server, cat_client_t *client, pthread_mutex_t *cat_mutex);
 
 // Start listening on given port (spawns accept thread)
 // listen_addr: NULL or "localhost" for loopback only, "any" for all interfaces

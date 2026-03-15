@@ -188,6 +188,8 @@ elad-spectrum -c 4532 -l any
 |--------|-------------|
 | `-c, --cat-port PORT` | Start TCP CAT server on PORT |
 | `-i, --iq-port PORT` | Start TCP IQ streaming server on PORT |
+| `-I, --iq-input HOST:PORT` | Connect to remote IQ server (replaces USB) |
+| `-C, --cat-input HOST:PORT` | Connect to remote CAT server (replaces serial) |
 | `-l, --cat-listen ADDR` | Listen address: `localhost` (default) or `any` |
 
 ## IQ Streaming Server
@@ -203,6 +205,26 @@ elad-spectrum -i 4533 -c 4532 -l any
 ```
 
 The IQ server sends a 16-byte header on connection (magic, sample rate, format), then streams continuous raw 32-bit signed IQ pairs at the radio's sample rate (192 kHz). Up to 8 clients can connect simultaneously.
+
+## Network Input Mode
+
+Instead of connecting directly to a radio via USB, the application can receive IQ and CAT data from a remote EladSpectrum instance over TCP. This is useful for:
+- Remote monitoring of a radio on another machine
+- Chaining multiple spectrum displays
+- Feeding data to tools like SWLDemodTool via a local relay
+
+```bash
+# Connect to remote IQ and CAT servers
+elad-spectrum -I fdmduopi.local:4533 -C fdmduopi.local:4532
+
+# Connect to remote and re-serve locally (for chaining)
+elad-spectrum -I fdmduopi.local:4533 -C fdmduopi.local:4532 -i 4534 -c 4535
+
+# IQ only (no CAT — frequency/mode won't be displayed)
+elad-spectrum -I 192.168.1.10:4533
+```
+
+Both IQ and CAT clients auto-reconnect if the remote server goes down.
 
 ### Testing with netcat
 
