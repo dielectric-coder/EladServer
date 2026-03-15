@@ -143,6 +143,10 @@ Colored rectangles on the x-axis indicate radio bands:
 |---------|----------|
 | **Ref** spinner | Reference level (top of display, dB) |
 | **Rng** spinner | Dynamic range (dB span) |
+| `+` / `=` | Zoom in |
+| `-` | Zoom out |
+| Left / Right arrow | Pan left / right (when zoomed) |
+| Home | Reset zoom and pan |
 
 #### Pi Mode
 In Pi mode (`-p`), the control bar shows a compact display:
@@ -351,7 +355,15 @@ cp /usr/share/elad-spectrum/bands-r2.json ~/.config/elad-spectrum/bands.json
 
 ## Keyboard Shortcuts
 
-Currently, all interaction is via mouse (desktop) or rotary encoders (Pi).
+| Key | Action |
+|-----|--------|
+| `+` / `=` | Zoom in |
+| `-` | Zoom out |
+| Left arrow | Pan left (when zoomed) |
+| Right arrow | Pan right (when zoomed) |
+| Home | Reset zoom and pan to 1x |
+
+Keyboard shortcuts are available in desktop mode. In Pi mode, use the rotary encoders instead.
 
 ## Tips for Best Results
 

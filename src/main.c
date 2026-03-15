@@ -56,6 +56,8 @@ typedef struct {
     cat_server_t *cat_server;
     iq_server_t *iq_server;
     pthread_mutex_t cat_mutex;
+    int zoom_level;                   // 1, 2, 4, 8, 16
+    int pan_offset;                   // Shared pan for spectrum/waterfall
 #ifdef HAVE_GPIOD
     rotary_encoder_t *encoder1;       // Parameter control encoder
     rotary_encoder_t *encoder2;       // Zoom/pan control encoder
@@ -63,8 +65,6 @@ typedef struct {
     GtkWidget *zoom_label;            // Shows zoom level and mode
     active_param_t active_param;      // Current parameter selection
     encoder2_mode_t encoder2_mode;    // Zoom or pan mode
-    int zoom_level;                   // 1, 2, 4
-    int pan_offset;                   // Shared pan for spectrum/waterfall
 #endif
 
     pthread_t usb_thread;
@@ -379,18 +379,8 @@ static gboolean save_settings_timeout(gpointer user_data) {
     settings.spectrum_range = gtk_adjustment_get_value(app_data->range_adj);
     settings.waterfall_ref = gtk_adjustment_get_value(app_data->waterfall_ref_adj);
     settings.waterfall_range = gtk_adjustment_get_value(app_data->waterfall_range_adj);
-#ifdef HAVE_GPIOD
-    if (app_data->pi_mode) {
-        settings.zoom_level = app_data->zoom_level;
-        settings.pan_offset = app_data->pan_offset;
-    } else {
-        settings.zoom_level = 1;
-        settings.pan_offset = 0;
-    }
-#else
-    settings.zoom_level = 1;
-    settings.pan_offset = 0;
-#endif
+    settings.zoom_level = app_data->zoom_level;
+    settings.pan_offset = app_data->pan_offset;
     settings_save(&settings);
 
     app_data->save_timeout_id = 0;
@@ -426,6 +416,91 @@ static void on_waterfall_range_changed(GtkAdjustment *adj G_GNUC_UNUSED, gpointe
     float min_db = ref_db - range_db;
     waterfall_widget_set_range(WATERFALL_WIDGET(app_data->waterfall), min_db, ref_db);
     schedule_settings_save(app_data);
+}
+
+// Zoom/pan helpers (used by both keyboard and encoder)
+static void apply_zoom_change(app_data_t *app_data, int direction) {
+    int new_zoom = app_data->zoom_level;
+
+    if (direction > 0) {
+        if (new_zoom < 16) new_zoom *= 2;  // Zoom in
+    } else {
+        if (new_zoom > 1) new_zoom /= 2;   // Zoom out
+    }
+
+    if (new_zoom != app_data->zoom_level) {
+        app_data->zoom_level = new_zoom;
+        app_data->pan_offset = 0;
+
+        spectrum_widget_set_zoom(SPECTRUM_WIDGET(app_data->spectrum), app_data->zoom_level);
+        spectrum_widget_set_pan(SPECTRUM_WIDGET(app_data->spectrum), 0);
+        waterfall_widget_set_zoom(WATERFALL_WIDGET(app_data->waterfall), app_data->zoom_level);
+        waterfall_widget_set_pan(WATERFALL_WIDGET(app_data->waterfall), 0);
+
+        schedule_settings_save(app_data);
+    }
+}
+
+static void apply_pan_change(app_data_t *app_data, int direction) {
+    if (app_data->zoom_level == 1) return;
+
+    int visible_bins = FFT_SIZE / app_data->zoom_level;
+    int pan_step = visible_bins / 10;
+    if (pan_step < 1) pan_step = 1;
+
+    app_data->pan_offset += direction * pan_step;
+
+    int max_pan = (FFT_SIZE - visible_bins) / 2;
+    if (app_data->pan_offset < -max_pan) app_data->pan_offset = -max_pan;
+    if (app_data->pan_offset > max_pan) app_data->pan_offset = max_pan;
+
+    spectrum_widget_set_pan(SPECTRUM_WIDGET(app_data->spectrum), app_data->pan_offset);
+    waterfall_widget_set_pan(WATERFALL_WIDGET(app_data->waterfall), app_data->pan_offset);
+
+    schedule_settings_save(app_data);
+}
+
+static void apply_zoom_reset(app_data_t *app_data) {
+    app_data->zoom_level = 1;
+    app_data->pan_offset = 0;
+
+    spectrum_widget_set_zoom(SPECTRUM_WIDGET(app_data->spectrum), 1);
+    spectrum_widget_set_pan(SPECTRUM_WIDGET(app_data->spectrum), 0);
+    waterfall_widget_set_zoom(WATERFALL_WIDGET(app_data->waterfall), 1);
+    waterfall_widget_set_pan(WATERFALL_WIDGET(app_data->waterfall), 0);
+
+    schedule_settings_save(app_data);
+}
+
+// Keyboard zoom/pan handler (non-Pi mode only)
+static gboolean on_key_pressed(GtkEventControllerKey *controller G_GNUC_UNUSED,
+                                guint keyval, guint keycode G_GNUC_UNUSED,
+                                GdkModifierType state G_GNUC_UNUSED,
+                                gpointer user_data) {
+    app_data_t *app_data = (app_data_t *)user_data;
+
+    if (app_data->pi_mode) return FALSE;
+
+    switch (keyval) {
+        case GDK_KEY_plus:
+        case GDK_KEY_equal:
+            apply_zoom_change(app_data, 1);
+            return TRUE;
+        case GDK_KEY_minus:
+            apply_zoom_change(app_data, -1);
+            return TRUE;
+        case GDK_KEY_Left:
+            apply_pan_change(app_data, -1);
+            return TRUE;
+        case GDK_KEY_Right:
+            apply_pan_change(app_data, 1);
+            return TRUE;
+        case GDK_KEY_Home:
+            apply_zoom_reset(app_data);
+            return TRUE;
+        default:
+            return FALSE;
+    }
 }
 
 #ifdef HAVE_GPIOD
@@ -522,61 +597,20 @@ static void on_encoder1_button(void *user_data) {
 }
 
 // Encoder 2 rotation callback - zooms or pans based on mode
+// Encoder direction convention: >0 = clockwise (zoom out / pan right)
 static void on_encoder2_rotation(int direction, void *user_data) {
     app_data_t *app_data = (app_data_t *)user_data;
 
     if (app_data->encoder2_mode == ENCODER2_MODE_ZOOM) {
-        // Zoom mode: rotation changes zoom level
-        int new_zoom = app_data->zoom_level;
-
-        if (direction > 0) {
-            // Zoom out: 16 -> 8 -> 4 -> 2 -> 1 (SPAN increases)
-            if (new_zoom > 1) new_zoom /= 2;
-        } else {
-            // Zoom in: 1 -> 2 -> 4 -> 8 -> 16 (SPAN decreases)
-            if (new_zoom < 16) new_zoom *= 2;
-        }
-
-        if (new_zoom != app_data->zoom_level) {
-            app_data->zoom_level = new_zoom;
-
-            // Reset pan when zoom changes
-            app_data->pan_offset = 0;
-
-            // Apply zoom and reset pan to both widgets
-            spectrum_widget_set_zoom(SPECTRUM_WIDGET(app_data->spectrum), app_data->zoom_level);
-            spectrum_widget_set_pan(SPECTRUM_WIDGET(app_data->spectrum), 0);
-            waterfall_widget_set_zoom(WATERFALL_WIDGET(app_data->waterfall), app_data->zoom_level);
-            waterfall_widget_set_pan(WATERFALL_WIDGET(app_data->waterfall), 0);
-
-            update_zoom_label(app_data);
-            schedule_settings_save(app_data);
-        }
-    } else {
-        // Pan mode: rotation translates horizontally (only when zoom > 1)
-        if (app_data->zoom_level == 1) {
-            return;  // No pan at 1x zoom
-        }
-
-        // Calculate pan step: one grid line per detent (scales with zoom)
-        int visible_bins = FFT_SIZE / app_data->zoom_level;
-        int pan_step = visible_bins / 10;  // 10 grid lines on display
-        if (pan_step < 1) pan_step = 1;
-
-        // Update pan offset (negative direction for intuitive left/right)
-        app_data->pan_offset -= direction * pan_step;
-
-        // Clamp to valid range
-        int max_pan = (FFT_SIZE - visible_bins) / 2;
-        if (app_data->pan_offset < -max_pan) app_data->pan_offset = -max_pan;
-        if (app_data->pan_offset > max_pan) app_data->pan_offset = max_pan;
-
-        // Apply pan to both widgets
-        spectrum_widget_set_pan(SPECTRUM_WIDGET(app_data->spectrum), app_data->pan_offset);
-        waterfall_widget_set_pan(WATERFALL_WIDGET(app_data->waterfall), app_data->pan_offset);
-
+        // Encoder: clockwise (>0) = zoom out, counter-clockwise (<0) = zoom in
+        // Helper: >0 = zoom in, <0 = zoom out — so negate
+        apply_zoom_change(app_data, -direction);
         update_zoom_label(app_data);
-        schedule_settings_save(app_data);
+    } else {
+        // Encoder: clockwise (>0) = pan right, but encoder convention negates
+        // Helper: >0 = pan right — so negate to match original behavior
+        apply_pan_change(app_data, -direction);
+        update_zoom_label(app_data);
     }
 }
 
@@ -605,18 +639,8 @@ static gboolean on_window_close(GtkWindow *window G_GNUC_UNUSED, gpointer user_d
     settings.spectrum_range = gtk_adjustment_get_value(app_data->range_adj);
     settings.waterfall_ref = gtk_adjustment_get_value(app_data->waterfall_ref_adj);
     settings.waterfall_range = gtk_adjustment_get_value(app_data->waterfall_range_adj);
-#ifdef HAVE_GPIOD
-    if (app_data->pi_mode) {
-        settings.zoom_level = app_data->zoom_level;
-        settings.pan_offset = app_data->pan_offset;
-    } else {
-        settings.zoom_level = 1;
-        settings.pan_offset = 0;
-    }
-#else
-    settings.zoom_level = 1;
-    settings.pan_offset = 0;
-#endif
+    settings.zoom_level = app_data->zoom_level;
+    settings.pan_offset = app_data->pan_offset;
     settings_save(&settings);
 
     // Signal threads to stop
@@ -933,19 +957,27 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
         gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "error");
     }
 
+    // Restore saved zoom/pan to widgets (all modes)
+    app_data->zoom_level = settings.zoom_level;
+    app_data->pan_offset = settings.pan_offset;
+    spectrum_widget_set_zoom(SPECTRUM_WIDGET(app_data->spectrum), app_data->zoom_level);
+    spectrum_widget_set_pan(SPECTRUM_WIDGET(app_data->spectrum), app_data->pan_offset);
+    waterfall_widget_set_zoom(WATERFALL_WIDGET(app_data->waterfall), app_data->zoom_level);
+    waterfall_widget_set_pan(WATERFALL_WIDGET(app_data->waterfall), app_data->pan_offset);
+
+    // Keyboard zoom/pan (non-Pi mode)
+    if (!app_data->pi_mode) {
+        GtkEventController *key_controller = gtk_event_controller_key_new();
+        gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
+        g_signal_connect(key_controller, "key-pressed", G_CALLBACK(on_key_pressed), app_data);
+        gtk_widget_add_controller(app_data->window, key_controller);
+    }
+
 #ifdef HAVE_GPIOD
     // Initialize rotary encoders (Pi mode only)
     if (app_data->pi_mode) {
-        app_data->zoom_level = settings.zoom_level;
-        app_data->pan_offset = settings.pan_offset;
         app_data->active_param = PARAM_SPECTRUM_REF;
         app_data->encoder2_mode = ENCODER2_MODE_ZOOM;
-
-        // Apply saved zoom/pan to widgets
-        spectrum_widget_set_zoom(SPECTRUM_WIDGET(app_data->spectrum), app_data->zoom_level);
-        spectrum_widget_set_pan(SPECTRUM_WIDGET(app_data->spectrum), app_data->pan_offset);
-        waterfall_widget_set_zoom(WATERFALL_WIDGET(app_data->waterfall), app_data->zoom_level);
-        waterfall_widget_set_pan(WATERFALL_WIDGET(app_data->waterfall), app_data->pan_offset);
 
         // Encoder 1 - Parameter control (GPIO 17/27/22)
         app_data->encoder1 = rotary_encoder_new_with_pins(
@@ -1077,6 +1109,7 @@ int main(int argc, char *argv[]) {
     app.window_height = 768;
     app.cat_server_port = 0;   // Disabled by default
     app.iq_server_port = 0;    // Disabled by default
+    app.zoom_level = 1;        // Default zoom (overridden by settings_load)
 
     // Parse and filter command-line options (before GTK takes over)
     int new_argc = 1;

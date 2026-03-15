@@ -451,6 +451,12 @@ debian/
     - CW/AM/FM: symmetric lines around center
     - Data modes (D300, D600, D1k): symmetric lines centered at +1500 Hz offset
   - Lines follow zoom/pan and only appear when visible
+- **Keyboard Zoom/Pan** (non-Pi mode):
+  - `+` / `=`: Zoom in (1x → 2x → 4x → 8x → 16x)
+  - `-`: Zoom out (16x → 8x → 4x → 2x → 1x)
+  - Left arrow: Pan left (when zoomed)
+  - Right arrow: Pan right (when zoomed)
+  - Home: Reset zoom and pan to 1x center
 - **Band Overlay**: Colored rectangles on frequency axis showing radio bands
   - Green: Amateur radio bands (e.g., 40m, 20m, 15m)
   - Orange: Broadcast bands (e.g., AM, shortwave)
