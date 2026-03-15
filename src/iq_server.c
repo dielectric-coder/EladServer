@@ -60,6 +60,26 @@ static int send_header(int fd, uint32_t sample_rate) {
     return 0;
 }
 
+// Add client fd atomically with count check; returns 0 on success, -1 if full
+static int add_client_fd(iq_server_t *server, int fd) {
+    pthread_mutex_lock(&server->clients_mutex);
+    if (server->client_count >= IQ_SERVER_MAX_CLIENTS) {
+        pthread_mutex_unlock(&server->clients_mutex);
+        return -1;
+    }
+    for (int i = 0; i < IQ_SERVER_MAX_CLIENTS; i++) {
+        if (server->client_fds[i] == -1) {
+            server->client_fds[i] = fd;
+            server->client_count++;
+            pthread_mutex_unlock(&server->clients_mutex);
+            return 0;
+        }
+    }
+    // Should not reach here if client_count is accurate
+    pthread_mutex_unlock(&server->clients_mutex);
+    return -1;
+}
+
 // Accept thread
 static void *accept_thread_func(void *arg) {
     iq_server_t *server = (iq_server_t *)arg;
@@ -81,41 +101,28 @@ static void *accept_thread_func(void *arg) {
             break;
         }
 
-        // Check client count
-        pthread_mutex_lock(&server->clients_mutex);
-        int count = server->client_count;
-        pthread_mutex_unlock(&server->clients_mutex);
-
-        if (count >= IQ_SERVER_MAX_CLIENTS) {
-            fprintf(stderr, "IQ server: max clients reached, rejecting\n");
-            close(client_fd);
-            continue;
-        }
-
         // Disable Nagle for low-latency streaming
         int flag = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-        // Send protocol header
+        // Send protocol header (before adding to client list, so broadcast won't block on it)
         if (send_header(client_fd, server->sample_rate) != 0) {
             fprintf(stderr, "IQ server: failed to send header\n");
             close(client_fd);
             continue;
         }
 
-        fprintf(stderr, "IQ server: client connected from %s:%d\n",
-                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
-        // Add to client list
-        pthread_mutex_lock(&server->clients_mutex);
-        for (int i = 0; i < IQ_SERVER_MAX_CLIENTS; i++) {
-            if (server->client_fds[i] == -1) {
-                server->client_fds[i] = client_fd;
-                server->client_count++;
-                break;
-            }
+        // Add to client list atomically (checks count inside lock)
+        if (add_client_fd(server, client_fd) != 0) {
+            fprintf(stderr, "IQ server: max clients reached, rejecting\n");
+            close(client_fd);
+            continue;
         }
-        pthread_mutex_unlock(&server->clients_mutex);
+
+        char addr_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, addr_str, sizeof(addr_str));
+        fprintf(stderr, "IQ server: client connected from %s:%d\n",
+                addr_str, ntohs(client_addr.sin_port));
     }
 
     fprintf(stderr, "IQ server: accept thread stopped\n");
@@ -218,10 +225,15 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
         int total = 0;
         int failed = 0;
         while (total < length) {
-            int n = write(fd, data + total, length - total);
-            if (n <= 0) {
-                if (n < 0 && (errno == EAGAIN || errno == EINTR))
+            int n = send(fd, data + total, length - total, MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (n < 0) {
+                if (errno == EINTR)
                     continue;
+                // EAGAIN/EWOULDBLOCK means client can't keep up - disconnect it
+                failed = 1;
+                break;
+            }
+            if (n == 0) {
                 failed = 1;
                 break;
             }

@@ -74,16 +74,24 @@ void cat_server_set_demod_callback(cat_server_t *server,
     server->demod_user_data = user_data;
 }
 
-static void add_client_fd(cat_server_t *server, int fd) {
+// Add client fd atomically with count check; returns 0 on success, -1 if full
+static int add_client_fd(cat_server_t *server, int fd) {
     pthread_mutex_lock(&server->clients_mutex);
+    if (server->client_count >= CAT_SERVER_MAX_CLIENTS) {
+        pthread_mutex_unlock(&server->clients_mutex);
+        return -1;
+    }
     for (int i = 0; i < CAT_SERVER_MAX_CLIENTS; i++) {
         if (server->client_fds[i] == -1) {
             server->client_fds[i] = fd;
             server->client_count++;
-            break;
+            pthread_mutex_unlock(&server->clients_mutex);
+            return 0;
         }
     }
+    // Should not reach here if client_count is accurate
     pthread_mutex_unlock(&server->clients_mutex);
+    return -1;
 }
 
 static void remove_client_fd(cat_server_t *server, int fd) {
@@ -145,7 +153,7 @@ static void *client_handler(void *arg) {
                         }
                     }
                     // Acknowledge
-                    if (write(fd, "DM;", 3) < 0) break;
+                    if (send(fd, "DM;", 3, MSG_NOSIGNAL) < 0 && errno != EINTR) break;
                     start = i + 1;
                     continue;
                 }
@@ -163,9 +171,9 @@ static void *client_handler(void *arg) {
                 pthread_mutex_unlock(server->cat_mutex);
 
                 if (resp_len > 0) {
-                    if (write(fd, response, resp_len) < 0) break;
+                    if (send(fd, response, resp_len, MSG_NOSIGNAL) < 0 && errno != EINTR) break;
                 } else {
-                    if (write(fd, "?;", 2) < 0) break;
+                    if (send(fd, "?;", 2, MSG_NOSIGNAL) < 0 && errno != EINTR) break;
                 }
 
                 start = i + 1;
@@ -186,8 +194,20 @@ static void *client_handler(void *arg) {
         }
     }
 
-    remove_client_fd(server, fd);
-    close(fd);
+    // Remove from tracking and close fd (only if server hasn't already closed it)
+    pthread_mutex_lock(&server->clients_mutex);
+    int found = 0;
+    for (int i = 0; i < CAT_SERVER_MAX_CLIENTS; i++) {
+        if (server->client_fds[i] == fd) {
+            server->client_fds[i] = -1;
+            server->client_count--;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&server->clients_mutex);
+    if (found)
+        close(fd);
     return NULL;
 }
 
@@ -211,21 +231,17 @@ static void *accept_thread_func(void *arg) {
             break;
         }
 
-        // Check client count
-        pthread_mutex_lock(&server->clients_mutex);
-        int count = server->client_count;
-        pthread_mutex_unlock(&server->clients_mutex);
-
-        if (count >= CAT_SERVER_MAX_CLIENTS) {
+        // Add to client list atomically (checks count inside lock)
+        if (add_client_fd(server, client_fd) != 0) {
             fprintf(stderr, "CAT server: max clients reached, rejecting connection\n");
             close(client_fd);
             continue;
         }
 
+        char addr_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, addr_str, sizeof(addr_str));
         fprintf(stderr, "CAT server: client connected from %s:%d\n",
-                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
-        add_client_fd(server, client_fd);
+                addr_str, ntohs(client_addr.sin_port));
 
         client_ctx_t *ctx = malloc(sizeof(client_ctx_t));
         if (!ctx) {
@@ -316,16 +332,14 @@ void cat_server_stop(cat_server_t *server) {
         server->listen_fd = -1;
     }
 
-    // Close all client sockets to unblock read()
+    // Shutdown all client sockets to unblock read() in handler threads
+    // Don't close here — handler threads will close on exit to avoid double-close
     pthread_mutex_lock(&server->clients_mutex);
     for (int i = 0; i < CAT_SERVER_MAX_CLIENTS; i++) {
         if (server->client_fds[i] >= 0) {
             shutdown(server->client_fds[i], SHUT_RDWR);
-            close(server->client_fds[i]);
-            server->client_fds[i] = -1;
         }
     }
-    server->client_count = 0;
     pthread_mutex_unlock(&server->clients_mutex);
 
     pthread_join(server->accept_thread, NULL);

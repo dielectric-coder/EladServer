@@ -3,6 +3,15 @@ project('elad-spectrum', 'c',
   default_options: ['c_std=c11', 'warning_level=2']
 )
 
+# Security hardening flags
+cc = meson.get_compiler('c')
+hardening_flags = ['-fstack-protector-strong', '-Wformat-security']
+# _FORTIFY_SOURCE requires optimization
+if get_option('buildtype') != 'debug' and get_option('buildtype') != 'plain'
+  hardening_flags += '-D_FORTIFY_SOURCE=2'
+endif
+add_project_arguments(cc.get_supported_arguments(hardening_flags), language: 'c')
+
 gtk4_dep = dependency('gtk4')
 libusb_dep = dependency('libusb-1.0')
 fftw3_dep = dependency('fftw3')

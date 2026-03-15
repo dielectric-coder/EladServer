@@ -220,6 +220,7 @@ int usb_device_set_frequency(usb_device_t *dev, long freq_hz) {
     double tuning_freq;
     unsigned int tuning_word, tw_ls, tw_ms;
     long effective_rate = S_RATE + dev->sample_rate_correction;
+    if (effective_rate <= 0) effective_rate = S_RATE;  // Guard against bad correction
 
     // Calculate tuning word for FPGA
     tuning_freq = freq_hz - (floor((double)freq_hz / effective_rate) * effective_rate);
@@ -400,12 +401,14 @@ void usb_device_stop_streaming(usb_device_t *dev) {
             wait_count++;
         }
         if (atomic_load(&dev->transfers_pending) > 0) {
-            fprintf(stderr, "Warning: %d transfers still pending after timeout\n",
+            fprintf(stderr, "Warning: %d transfers still pending after timeout, "
+                    "skipping free to avoid use-after-free\n",
                     atomic_load(&dev->transfers_pending));
+            return;  // Leak transfers rather than risk use-after-free
         }
     }
 
-    // Now safe to free transfers
+    // Now safe to free transfers (all callbacks have completed)
     for (int i = 0; i < NUM_TRANSFERS; i++) {
         if (dev->transfers[i]) {
             libusb_free_transfer(dev->transfers[i]);

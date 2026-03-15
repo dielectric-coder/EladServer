@@ -93,11 +93,16 @@ int cat_client_raw_command(cat_client_t *client, const char *cmd, int cmd_len,
                            char *response, int response_size) {
     if (!client || client->fd < 0) return -1;
 
-    // Send command
+    // Send command (retry on EINTR)
     int written = 0;
     while (written < cmd_len) {
-        int n = send(client->fd, cmd + written, cmd_len - written, 0);
-        if (n <= 0) {
+        int n = send(client->fd, cmd + written, cmd_len - written, MSG_NOSIGNAL);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            cat_client_disconnect(client);
+            return -1;
+        }
+        if (n == 0) {
             cat_client_disconnect(client);
             return -1;
         }
@@ -111,14 +116,19 @@ int cat_client_raw_command(cat_client_t *client, const char *cmd, int cmd_len,
         int n = recv(client->fd, response + total, response_size - 1 - total, 0);
         if (n > 0) {
             total += n;
-            // Check for complete response (ends with ;)
-            if (total > 0 && response[total - 1] == ';')
-                break;
+            // Scan for ';' terminator anywhere in received data
+            for (int j = 0; j < total; j++) {
+                if (response[j] == ';') {
+                    total = j + 1;
+                    goto response_done;
+                }
+            }
         } else if (n == 0) {
             // Server closed connection
             cat_client_disconnect(client);
             return -1;
         } else {
+            if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 retries--;
                 continue;
@@ -127,6 +137,7 @@ int cat_client_raw_command(cat_client_t *client, const char *cmd, int cmd_len,
             return -1;
         }
     }
+response_done:
 
     response[total] = '\0';
     return total;

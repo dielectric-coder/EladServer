@@ -263,6 +263,11 @@ INI-style configuration file handling.
 **Synchronization:**
 - `GMutex` protects spectrum data buffer
 - `atomic_int` for flags (running, connected, ready)
+- `atomic_int_least64_t` for demod timestamp (safe on 32-bit ARM)
+- `pthread_mutex_t` (`fd_mutex`) protects IQ client socket fd between recv thread and stop
+- `pthread_mutex_t` (`clients_mutex`) protects client fd arrays in both TCP servers; add/remove are atomic with count check
+- TCP server client handlers own their fd lifecycle (close on exit); server stop uses `shutdown()` only to avoid double-close
+- IQ broadcast uses `MSG_DONTWAIT` to prevent blocking the data pipeline on slow clients
 - GTK idle callbacks for UI updates from other threads
 
 ## Build System

@@ -133,6 +133,14 @@ void settings_load(app_settings_t *settings) {
     }
 
     fclose(f);
+
+    // Validate ranges to prevent display glitches from corrupted config
+    if (settings->spectrum_range < 1.0) settings->spectrum_range = DEFAULT_SPECTRUM_RANGE;
+    if (settings->waterfall_range < 1.0) settings->waterfall_range = DEFAULT_WATERFALL_RANGE;
+    if (settings->spectrum_ref < -200.0 || settings->spectrum_ref > 50.0)
+        settings->spectrum_ref = DEFAULT_SPECTRUM_REF;
+    if (settings->waterfall_ref < -200.0 || settings->waterfall_ref > 50.0)
+        settings->waterfall_ref = DEFAULT_WATERFALL_REF;
 }
 
 void settings_save(const app_settings_t *settings) {

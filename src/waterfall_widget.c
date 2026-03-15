@@ -132,9 +132,9 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
     if (self->bandwidth_hz > 0 && self->sample_rate > 0 && self->spectrum_size > 0) {
         int center_bin = self->spectrum_size / 2;
         // Apply center offset (e.g., +1500 Hz for data modes)
-        int offset_bins = (self->center_offset_hz * self->spectrum_size) / self->sample_rate;
+        int offset_bins = (int)((int64_t)self->center_offset_hz * self->spectrum_size / self->sample_rate);
         center_bin += offset_bins;
-        int bw_bins = (self->bandwidth_hz * self->spectrum_size) / self->sample_rate;
+        int bw_bins = (int)((int64_t)self->bandwidth_hz * self->spectrum_size / self->sample_rate);
 
         // Set up dashed line style (orange for resonator, red otherwise)
         if (self->is_resonator) {
@@ -203,7 +203,7 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
     // Draw demodulator bandwidth lines (yellow dashed) if active
     if (self->demod_bandwidth_hz > 0 && self->sample_rate > 0 && self->spectrum_size > 0) {
         int center_bin = self->spectrum_size / 2;
-        int bw_bins = (self->demod_bandwidth_hz * self->spectrum_size) / self->sample_rate;
+        int bw_bins = (int)((int64_t)self->demod_bandwidth_hz * self->spectrum_size / self->sample_rate);
 
         cairo_set_source_rgb(cr, 1.0, 1.0, 0.0);  // Yellow
         cairo_set_line_width(cr, 1.5);
@@ -359,8 +359,9 @@ void waterfall_widget_add_line(WaterfallWidget *widget, const float *spectrum_db
         uint32_t *row = (uint32_t *)data;
         for (int x = 0; x < width; x++) {
             // Map x to spectrum bin (within zoomed range)
-            int bin = start_bin + x * visible_bins / width;
-            if (bin >= start_bin + visible_bins) bin = start_bin + visible_bins - 1;
+            int bin = start_bin + (int)((int64_t)x * visible_bins / width);
+            if (bin < 0) bin = 0;
+            if (bin >= size) bin = size - 1;
 
             float db = spectrum_db[bin];
             if (db < widget->min_db) db = widget->min_db;

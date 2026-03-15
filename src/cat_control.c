@@ -109,10 +109,15 @@ int cat_control_raw_command(cat_control_t *cat, const char *cmd, int cmd_len,
     // Flush input buffer
     tcflush(cat->fd, TCIFLUSH);
 
-    // Send command
-    int written = write(cat->fd, cmd, cmd_len);
-    if (written != cmd_len) {
-        return -1;
+    // Send command (retry on EINTR)
+    int written = 0;
+    while (written < cmd_len) {
+        int n = write(cat->fd, cmd + written, cmd_len - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        written += n;
     }
 
     // Small delay for radio to process
@@ -125,17 +130,21 @@ int cat_control_raw_command(cat_control_t *cat, const char *cmd, int cmd_len,
         int n = read(cat->fd, response + total, response_size - 1 - total);
         if (n > 0) {
             total += n;
-            // Check if we got a complete response (ends with ;)
-            if (total > 0 && response[total - 1] == ';') {
-                break;
+            // Scan for ';' terminator anywhere in received data
+            for (int j = 0; j < total; j++) {
+                if (response[j] == ';') {
+                    total = j + 1;  // Truncate to end of first complete response
+                    goto response_done;
+                }
             }
-        } else if (n == 0 || (n < 0 && errno == EAGAIN)) {
-            retries--;
+        } else if (n == 0 || (n < 0 && (errno == EAGAIN || errno == EINTR))) {
+            if (errno != EINTR) retries--;
             usleep(10000);  // 10ms
         } else {
             return -1;
         }
     }
+response_done:
 
     response[total] = '\0';
     return total;

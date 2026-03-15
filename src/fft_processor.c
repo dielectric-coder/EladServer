@@ -114,7 +114,8 @@ void fft_processor_free(fft_processor_t *fft) {
 
 // Convert 32-bit signed integer (4 bytes, little-endian) to float
 static inline float convert_32bit_sample(const uint8_t *data) {
-    int32_t value = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+    int32_t value = (int32_t)((uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+                              ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24));
     // Normalize to [-1.0, 1.0]
     return (float)value / 2147483648.0f;
 }

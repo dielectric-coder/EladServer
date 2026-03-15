@@ -107,7 +107,7 @@ typedef struct {
 
     // Demodulator state (from SWLDemodTool via DM command)
     atomic_int demod_bw_hz;       // 0 = inactive
-    int64_t demod_last_update;    // monotonic timestamp (microseconds)
+    atomic_int_least64_t demod_last_update;  // monotonic timestamp (microseconds)
 } app_data_t;
 
 static app_data_t app;
@@ -156,7 +156,7 @@ static int parse_bandwidth_hz(const char *bw_str, int *offset_hz, int *is_resona
 static void on_demod_status(int bandwidth_hz, void *user_data) {
     app_data_t *app_data = (app_data_t *)user_data;
     atomic_store(&app_data->demod_bw_hz, bandwidth_hz);
-    app_data->demod_last_update = g_get_monotonic_time();
+    atomic_store(&app_data->demod_last_update, g_get_monotonic_time());
 }
 
 // USB data callback - called from USB thread
@@ -366,8 +366,9 @@ static gboolean refresh_display(gpointer user_data) {
     // Update demodulator bandwidth lines (timeout after 5 seconds of no DM updates)
     {
         int demod_bw = atomic_load(&app_data->demod_bw_hz);
-        if (demod_bw > 0 && app_data->demod_last_update > 0) {
-            int64_t elapsed = g_get_monotonic_time() - app_data->demod_last_update;
+        int64_t last_update = atomic_load(&app_data->demod_last_update);
+        if (demod_bw > 0 && last_update > 0) {
+            int64_t elapsed = g_get_monotonic_time() - last_update;
             if (elapsed > 5000000) {  // 5 seconds
                 atomic_store(&app_data->demod_bw_hz, 0);
                 demod_bw = 0;
