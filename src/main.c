@@ -109,6 +109,7 @@ typedef struct {
     atomic_int demod_bw_hz;       // 0 = inactive
     atomic_int demod_mode;        // DEMOD_MODE_AM/USB/LSB/CW
     atomic_int_least64_t demod_last_update;  // monotonic timestamp (microseconds)
+    gboolean demod_was_active;    // Track transitions for overlay update
 } app_data_t;
 
 static app_data_t app;
@@ -345,11 +346,29 @@ static gboolean refresh_display(gpointer user_data) {
                 // Update overlay with frequency, mode and filter
                 if (freq_changed || mode_changed || filter_changed) {
                     char freq_str[32];
-                    char mode_filter_str[32];
+                    char mode_filter_str[64];
                     snprintf(freq_str, sizeof(freq_str), "%.6f MHz", app_data->center_freq_hz / 1e6);
-                    snprintf(mode_filter_str, sizeof(mode_filter_str), "%s %s",
-                             usb_device_mode_name(app_data->current_mode),
-                             app_data->current_filter);
+                    if (app_data->demod_was_active) {
+                        int dm_bw = atomic_load(&app_data->demod_bw_hz);
+                        int dm_mode = atomic_load(&app_data->demod_mode);
+                        static const char *demod_mode_names[] = {"AM", "USB", "LSB", "CW"};
+                        const char *dm_name = (dm_mode >= 0 && dm_mode <= 3)
+                            ? demod_mode_names[dm_mode] : "?";
+                        if (dm_bw >= 1000)
+                            snprintf(mode_filter_str, sizeof(mode_filter_str),
+                                     "%s %s | Demod: %s %.1fk",
+                                     usb_device_mode_name(app_data->current_mode),
+                                     app_data->current_filter, dm_name, dm_bw / 1000.0);
+                        else
+                            snprintf(mode_filter_str, sizeof(mode_filter_str),
+                                     "%s %s | Demod: %s %d Hz",
+                                     usb_device_mode_name(app_data->current_mode),
+                                     app_data->current_filter, dm_name, dm_bw);
+                    } else {
+                        snprintf(mode_filter_str, sizeof(mode_filter_str), "%s %s",
+                                 usb_device_mode_name(app_data->current_mode),
+                                 app_data->current_filter);
+                    }
                     spectrum_widget_set_overlay(SPECTRUM_WIDGET(app_data->spectrum),
                                                 freq_str, mode_filter_str);
 
@@ -378,6 +397,41 @@ static gboolean refresh_display(gpointer user_data) {
             }
         }
         waterfall_widget_set_demod_bandwidth(WATERFALL_WIDGET(app_data->waterfall), demod_bw, demod_mode);
+
+        // Update overlay and center marker on demod connect/disconnect transitions
+        gboolean demod_active = (demod_bw > 0);
+        if (demod_active != app_data->demod_was_active) {
+            app_data->demod_was_active = demod_active;
+            spectrum_widget_set_hide_center_marker(
+                SPECTRUM_WIDGET(app_data->spectrum), demod_active);
+
+            // Update overlay text
+            char freq_str[32];
+            char mode_filter_str[64];
+            snprintf(freq_str, sizeof(freq_str), "%.6f MHz",
+                     app_data->center_freq_hz / 1e6);
+            if (demod_active) {
+                static const char *demod_mode_names[] = {"AM", "USB", "LSB", "CW"};
+                const char *dm_name = (demod_mode >= 0 && demod_mode <= 3)
+                    ? demod_mode_names[demod_mode] : "?";
+                if (demod_bw >= 1000)
+                    snprintf(mode_filter_str, sizeof(mode_filter_str),
+                             "%s %s | Demod: %s %.1fk",
+                             usb_device_mode_name(app_data->current_mode),
+                             app_data->current_filter, dm_name, demod_bw / 1000.0);
+                else
+                    snprintf(mode_filter_str, sizeof(mode_filter_str),
+                             "%s %s | Demod: %s %d Hz",
+                             usb_device_mode_name(app_data->current_mode),
+                             app_data->current_filter, dm_name, demod_bw);
+            } else {
+                snprintf(mode_filter_str, sizeof(mode_filter_str), "%s %s",
+                         usb_device_mode_name(app_data->current_mode),
+                         app_data->current_filter);
+            }
+            spectrum_widget_set_overlay(SPECTRUM_WIDGET(app_data->spectrum),
+                                        freq_str, mode_filter_str);
+        }
     }
 
     // Check if new spectrum data is available
@@ -510,6 +564,9 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller G_GNUC_UNUSED,
     if (app_data->pi_mode) return FALSE;
 
     switch (keyval) {
+        case GDK_KEY_q:
+            gtk_window_close(GTK_WINDOW(app_data->window));
+            return TRUE;
         case GDK_KEY_plus:
         case GDK_KEY_equal:
             apply_zoom_change(app_data, 1);
@@ -1100,15 +1157,17 @@ static void shutdown_app(GtkApplication *gtk_app G_GNUC_UNUSED, gpointer user_da
 
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s [OPTIONS]\n", prog);
-    fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -f, --fullscreen       Start in fullscreen mode\n");
-    fprintf(stderr, "  -p, --pi               Set window size to 800x480 (5\" LCD)\n");
-    fprintf(stderr, "  -c, --cat-port PORT    Start CAT TCP server on PORT (default: %d)\n", CAT_SERVER_DEFAULT_PORT);
-    fprintf(stderr, "  -l, --cat-listen ADDR  CAT server listen address: localhost (default) or any\n");
-    fprintf(stderr, "  -i, --iq-port PORT     Start IQ streaming server on PORT\n");
-    fprintf(stderr, "  -I, --iq-input H:P     Connect to remote IQ server HOST:PORT (replaces USB)\n");
-    fprintf(stderr, "  -C, --cat-input H:P    Connect to remote CAT server HOST:PORT (replaces serial)\n");
-    fprintf(stderr, "  -h, --help             Show this help message\n");
+    fprintf(stderr, "\nDisplay:\n");
+    fprintf(stderr, "  -f, --fullscreen        Start in fullscreen mode\n");
+    fprintf(stderr, "  -p, --pi                Set window size to 800x480 (5\" LCD)\n");
+    fprintf(stderr, "\nServe (export data to network clients):\n");
+    fprintf(stderr, "  -c, --cat-serve PORT    Start CAT command server on PORT\n");
+    fprintf(stderr, "  -i, --iq-serve PORT     Start IQ streaming server on PORT\n");
+    fprintf(stderr, "  -l, --listen ADDR       Server listen address: localhost (default) or any\n");
+    fprintf(stderr, "\nConnect (receive data from remote servers):\n");
+    fprintf(stderr, "  -C, --cat-connect H:P   Connect to remote CAT server HOST:PORT (replaces serial)\n");
+    fprintf(stderr, "  -I, --iq-connect H:P    Connect to remote IQ server HOST:PORT (replaces USB)\n");
+    fprintf(stderr, "\n  -h, --help              Show this help message\n");
 }
 
 // Parse HOST:PORT string. Returns port number, fills host buffer.
@@ -1154,7 +1213,7 @@ int main(int argc, char *argv[]) {
             app.window_width = 800;
             app.window_height = 480;
             // Don't pass to GTK
-        } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--cat-port") == 0) {
+        } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--cat-serve") == 0 || strcmp(argv[i], "--cat-port") == 0) {
             if (i + 1 < argc) {
                 app.cat_server_port = atoi(argv[++i]);
                 if (app.cat_server_port <= 0 || app.cat_server_port > 65535) {
@@ -1163,11 +1222,11 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
             } else {
-                fprintf(stderr, "Missing port number for -c/--cat-port\n");
+                fprintf(stderr, "Missing port number for -c/--cat-serve\n");
                 g_free(new_argv);
                 return 1;
             }
-        } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--cat-listen") == 0) {
+        } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--listen") == 0 || strcmp(argv[i], "--cat-listen") == 0) {
             if (i + 1 < argc) {
                 const char *addr = argv[++i];
                 if (strcmp(addr, "any") == 0 || strcmp(addr, "localhost") == 0) {
@@ -1178,11 +1237,11 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
             } else {
-                fprintf(stderr, "Missing address for -l/--cat-listen\n");
+                fprintf(stderr, "Missing address for -l/--listen\n");
                 g_free(new_argv);
                 return 1;
             }
-        } else if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iq-port") == 0) {
+        } else if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iq-serve") == 0 || strcmp(argv[i], "--iq-port") == 0) {
             if (i + 1 < argc) {
                 app.iq_server_port = atoi(argv[++i]);
                 if (app.iq_server_port <= 0 || app.iq_server_port > 65535) {
@@ -1191,11 +1250,11 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
             } else {
-                fprintf(stderr, "Missing port number for -i/--iq-port\n");
+                fprintf(stderr, "Missing port number for -i/--iq-serve\n");
                 g_free(new_argv);
                 return 1;
             }
-        } else if (strcmp(argv[i], "-I") == 0 || strcmp(argv[i], "--iq-input") == 0) {
+        } else if (strcmp(argv[i], "-I") == 0 || strcmp(argv[i], "--iq-connect") == 0 || strcmp(argv[i], "--iq-input") == 0) {
             if (i + 1 < argc) {
                 app.iq_input_port = parse_host_port(argv[++i],
                     app.iq_input_host, sizeof(app.iq_input_host));
@@ -1205,11 +1264,11 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
             } else {
-                fprintf(stderr, "Missing HOST:PORT for -I/--iq-input\n");
+                fprintf(stderr, "Missing HOST:PORT for -I/--iq-connect\n");
                 g_free(new_argv);
                 return 1;
             }
-        } else if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "--cat-input") == 0) {
+        } else if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "--cat-connect") == 0 || strcmp(argv[i], "--cat-input") == 0) {
             if (i + 1 < argc) {
                 app.cat_input_port = parse_host_port(argv[++i],
                     app.cat_input_host, sizeof(app.cat_input_host));
@@ -1219,7 +1278,7 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
             } else {
-                fprintf(stderr, "Missing HOST:PORT for -C/--cat-input\n");
+                fprintf(stderr, "Missing HOST:PORT for -C/--cat-connect\n");
                 g_free(new_argv);
                 return 1;
             }
