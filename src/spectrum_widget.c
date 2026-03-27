@@ -21,7 +21,10 @@ struct _SpectrumWidget {
 
     // Overlay text
     char overlay_freq[32];
-    char overlay_mode[32];
+    char overlay_mode[64];
+
+    // Hide center frequency marker when demod app is connected
+    gboolean hide_center_marker;
 
     // Band overlay
     const bandplan_t *bandplan;
@@ -207,7 +210,8 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         cairo_set_line_width(cr, 1.0);
         cairo_stroke(cr);
 
-        // Draw red center frequency marker line or arrow
+        // Draw red center frequency marker line or arrow (hidden when demod connected)
+        if (!self->hide_center_marker) {
         int center_bin = self->spectrum_size / 2;
         cairo_set_source_rgb(cr, 1.0, 0.0, 0.0);
 
@@ -241,11 +245,12 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
                 cairo_fill(cr);
             }
         }
+        } // !hide_center_marker
     }
 
     // Draw overlay (frequency and mode) with transparent background - centered in plot area
     if (self->overlay_freq[0] != '\0' || self->overlay_mode[0] != '\0') {
-        char overlay_text[68];
+        char overlay_text[100];
         snprintf(overlay_text, sizeof(overlay_text), "%s  %s",
                  self->overlay_freq[0] ? self->overlay_freq : "",
                  self->overlay_mode[0] ? self->overlay_mode : "");
@@ -400,6 +405,12 @@ void spectrum_widget_set_pan(SpectrumWidget *widget, int pan_offset) {
 int spectrum_widget_get_pan(SpectrumWidget *widget) {
     if (!widget) return 0;
     return widget->pan_offset;
+}
+
+void spectrum_widget_set_hide_center_marker(SpectrumWidget *widget, gboolean hide) {
+    if (!widget) return;
+    widget->hide_center_marker = hide;
+    gtk_widget_queue_draw(GTK_WIDGET(widget));
 }
 
 void spectrum_widget_set_bandplan(SpectrumWidget *widget, const bandplan_t *plan) {

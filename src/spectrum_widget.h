@@ -40,6 +40,9 @@ void spectrum_widget_set_pan(SpectrumWidget *widget, int pan_offset);
 // Get current pan offset
 int spectrum_widget_get_pan(SpectrumWidget *widget);
 
+// Hide/show center frequency marker (hidden when demod app is connected)
+void spectrum_widget_set_hide_center_marker(SpectrumWidget *widget, gboolean hide);
+
 // Set bandplan for band overlay display
 void spectrum_widget_set_bandplan(SpectrumWidget *widget, const bandplan_t *plan);
 
