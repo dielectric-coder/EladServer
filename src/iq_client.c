@@ -147,13 +147,17 @@ static void *recv_thread_func(void *arg) {
                 header.sample_rate, header.format);
 
         // Stream data
+        int chunks = 0;
         while (atomic_load(&client->running)) {
             int rc = recv_exact(fd, buf, USB_BUFFER_SIZE);
             if (rc < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                     continue;  // Timeout, check running flag
+                fprintf(stderr, "IQ client: recv failed after %d chunks (errno=%d: %s)\n",
+                        chunks, errno, strerror(errno));
                 break;  // Disconnected
             }
+            chunks++;
             client->callback(buf, USB_BUFFER_SIZE, client->user_data);
         }
 

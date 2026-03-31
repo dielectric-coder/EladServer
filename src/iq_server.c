@@ -12,8 +12,9 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-// Disconnect after this many consecutive dropped chunks
-#define IQ_DROP_LIMIT 50
+// Disconnect after this many consecutive dropped chunks.
+// At 192kHz IQ (125 chunks/sec), 625 drops ≈ 5 seconds of stall tolerance.
+#define IQ_DROP_LIMIT 625
 
 struct iq_server {
     int listen_fd;
