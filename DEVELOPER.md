@@ -50,8 +50,9 @@ Technical documentation for developers working on the Elad Spectrum application.
 #### `main.c` - Application Entry Point
 - GTK4 application lifecycle management
 - Window creation and layout
-- Thread coordination (USB, GPIO)
-- Timer-based display refresh (~30 FPS)
+- Thread coordination (USB, CAT poll, GPIO)
+- Timer-based display refresh (~30 FPS) reads cached CAT data (no I/O)
+- Background CAT poll thread for serial/network I/O (~300ms interval)
 - Settings persistence with debounced auto-save
 
 **Key Data Structure:**
@@ -251,24 +252,41 @@ INI-style configuration file handling.
 ├──────────────────┤     ├──────────────────┤     ├──────────────────┤
 │ • Event loop     │     │ • Bulk transfers │     │ • Poll encoders  │
 │ • Display update │     │   or TCP recv    │     │ • Debounce       │
-│ • CAT polling    │◄────│ • FFT processing │     │ • Callbacks      │
-│   (serial or TCP)│     │ • Data callback  │     │                  │
-│ • Settings save  │     │ • Reconnection   │     │                  │
+│ • Read cached CAT│◄────│ • FFT processing │     │ • Callbacks      │
+│ • Settings save  │     │ • Data callback  │     │                  │
+│                  │     │ • Reconnection   │     │                  │
 └──────────────────┘     └──────────────────┘     └──────────────────┘
          ▲                        │
          │     GMutex protection  │
          └────────────────────────┘
+
+┌──────────────────┐     ┌──────────────────┐
+│  CAT Poll Thread │     │  TCP Servers     │
+├──────────────────┤     ├──────────────────┤
+│ • Serial/TCP I/O │     │ • CAT passthrough│
+│ • Freq/mode poll │     │ • IQ broadcast   │
+│ • Filter poll    │     │ • DM command     │
+│ • Cache results  │     │ • Client threads │
+│   (every ~300ms) │     │                  │
+└──────────────────┘     └──────────────────┘
 ```
 
+The CAT poll thread runs all serial/network CAT I/O in the background,
+writing results to cached fields in `app_data_t`. The GTK main thread
+reads the cache atomically (microseconds) instead of blocking on serial
+I/O (100-300ms per poll). This prevents display freezes, especially on
+Raspberry Pi.
+
 **Synchronization:**
-- `GMutex` protects spectrum data buffer
-- `atomic_int` for flags (running, connected, ready)
+- `GMutex` (`spectrum_mutex`) protects spectrum data buffer
+- `GMutex` (`cat_cache_mutex`) protects cached CAT results (freq, mode, vfo, filter)
+- `atomic_int` for flags (running, connected, ready, cat_cache_valid)
 - `atomic_int_least64_t` for demod timestamp (safe on 32-bit ARM)
+- `pthread_mutex_t` (`cat_mutex`) serializes serial port access between CAT poll thread and TCP server client handlers
 - `pthread_mutex_t` (`fd_mutex`) protects IQ client socket fd between recv thread and stop
 - `pthread_mutex_t` (`clients_mutex`) protects client fd arrays in both TCP servers; add/remove are atomic with count check
 - TCP server client handlers own their fd lifecycle (close on exit); server stop uses `shutdown()` only to avoid double-close
 - IQ broadcast uses `MSG_DONTWAIT` to prevent blocking the data pipeline on slow clients
-- GTK idle callbacks for UI updates from other threads
 
 ## Build System
 

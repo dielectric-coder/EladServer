@@ -80,7 +80,17 @@ typedef struct {
     elad_mode_t current_mode;
     int current_vfo;  // 0=VFO A, 1=VFO B
     char current_filter[16];  // Filter bandwidth string
-    int freq_poll_counter;
+
+    // CAT polling thread (offloads serial/network I/O from GTK main thread)
+    pthread_t cat_poll_thread;
+    atomic_int cat_poll_running;
+    // Cached CAT results (written by cat_poll_thread, read by GTK main thread)
+    GMutex cat_cache_mutex;
+    int cached_freq_hz;
+    elad_mode_t cached_mode;
+    int cached_vfo;
+    char cached_filter[16];
+    atomic_int cat_cache_valid;      // Set when new data available
 
     // Command-line options
     gboolean fullscreen;
@@ -255,6 +265,74 @@ static void *usb_thread_func(void *user_data) {
     return NULL;
 }
 
+// CAT polling thread - does all serial/network I/O off the GTK main thread
+static void *cat_poll_thread_func(void *user_data) {
+    app_data_t *app_data = (app_data_t *)user_data;
+
+    fprintf(stderr, "CAT poll thread started\n");
+
+    while (atomic_load(&app_data->cat_poll_running)) {
+        // Sleep 300ms between polls (interruptible in 50ms chunks)
+        for (int i = 0; i < 6 && atomic_load(&app_data->cat_poll_running); i++)
+            usleep(50000);
+        if (!atomic_load(&app_data->cat_poll_running)) break;
+
+        // Check connection state
+        gboolean is_connected = app_data->iq_input_port > 0
+            ? (app_data->iq_client && iq_client_is_connected(app_data->iq_client))
+            : atomic_load(&app_data->usb_connected);
+        if (!is_connected) continue;
+
+        // Lock CAT for serial/network I/O
+        pthread_mutex_lock(&app_data->cat_mutex);
+
+        long freq = 0;
+        elad_mode_t mode = 0;
+        int vfo = 0;
+        int cat_ok = 0;
+
+        if (app_data->cat_client) {
+            // Network CAT mode - reconnect if needed
+            if (!cat_client_is_connected(app_data->cat_client))
+                cat_client_connect(app_data->cat_client,
+                                   app_data->cat_input_host, app_data->cat_input_port);
+            if (cat_client_is_connected(app_data->cat_client))
+                cat_ok = (cat_client_get_freq_mode(app_data->cat_client, &freq, &mode, &vfo) == 0);
+        } else if (cat_control_is_open(app_data->cat)) {
+            cat_ok = (cat_control_get_freq_mode(app_data->cat, &freq, &mode, &vfo) == 0);
+        }
+
+        char filter_str[16] = "";
+        int filter_ok = 0;
+        if (cat_ok) {
+            if (app_data->cat_client && cat_client_is_connected(app_data->cat_client)) {
+                filter_ok = (cat_client_get_filter_bw(app_data->cat_client, mode,
+                                                      filter_str, sizeof(filter_str)) == 0);
+            } else {
+                filter_ok = (cat_control_get_filter_bw(app_data->cat, mode,
+                                                        filter_str, sizeof(filter_str)) == 0);
+            }
+        }
+
+        pthread_mutex_unlock(&app_data->cat_mutex);
+
+        // Write cached results (read by GTK main thread)
+        if (cat_ok) {
+            g_mutex_lock(&app_data->cat_cache_mutex);
+            app_data->cached_freq_hz = (int)freq;
+            app_data->cached_mode = mode;
+            app_data->cached_vfo = vfo;
+            if (filter_ok)
+                snprintf(app_data->cached_filter, sizeof(app_data->cached_filter), "%s", filter_str);
+            g_mutex_unlock(&app_data->cat_cache_mutex);
+            atomic_store(&app_data->cat_cache_valid, 1);
+        }
+    }
+
+    fprintf(stderr, "CAT poll thread stopped\n");
+    return NULL;
+}
+
 // Display refresh timer callback - called from GTK main thread
 static gboolean refresh_display(gpointer user_data) {
     app_data_t *app_data = (app_data_t *)user_data;
@@ -277,110 +355,79 @@ static gboolean refresh_display(gpointer user_data) {
         gtk_widget_add_css_class(GTK_WIDGET(app_data->status_icon), "disconnected");
     }
 
-    // Poll frequency and mode from radio every ~10 frames (~300ms)
-    app_data->freq_poll_counter++;
-    if (app_data->freq_poll_counter >= 10 && is_connected) {
-        app_data->freq_poll_counter = 0;
+    // Read cached CAT data from polling thread (no I/O on GTK main thread)
+    if (atomic_exchange(&app_data->cat_cache_valid, 0)) {
+        int freq;
+        elad_mode_t mode;
+        int vfo;
+        char filter_str[16];
 
-        // Try to lock CAT mutex (don't block GTK main thread if server is using it)
-        if (pthread_mutex_trylock(&app_data->cat_mutex) == 0) {
-            // Read frequency, mode and VFO via CAT (serial or network)
-            long freq;
-            elad_mode_t mode;
-            int vfo;
-            int cat_ok = 0;
-            if (app_data->cat_client) {
-                // Try to reconnect if disconnected
-                if (!cat_client_is_connected(app_data->cat_client))
-                    cat_client_connect(app_data->cat_client,
-                                       app_data->cat_input_host, app_data->cat_input_port);
-                if (cat_client_is_connected(app_data->cat_client))
-                    cat_ok = (cat_client_get_freq_mode(app_data->cat_client, &freq, &mode, &vfo) == 0);
-            } else if (cat_control_is_open(app_data->cat)) {
-                cat_ok = (cat_control_get_freq_mode(app_data->cat, &freq, &mode, &vfo) == 0);
+        g_mutex_lock(&app_data->cat_cache_mutex);
+        freq = app_data->cached_freq_hz;
+        mode = app_data->cached_mode;
+        vfo = app_data->cached_vfo;
+        memcpy(filter_str, app_data->cached_filter, sizeof(filter_str));
+        g_mutex_unlock(&app_data->cat_cache_mutex);
+
+        gboolean freq_changed = (freq > 0 && freq != app_data->center_freq_hz);
+        gboolean mode_changed = (mode != app_data->current_mode);
+        gboolean vfo_changed = (vfo != app_data->current_vfo);
+
+        if (freq_changed) {
+            app_data->center_freq_hz = freq;
+            spectrum_widget_set_center_freq(SPECTRUM_WIDGET(app_data->spectrum), app_data->center_freq_hz);
+        }
+
+        if (mode_changed) {
+            app_data->current_mode = mode;
+        }
+
+        if (vfo_changed) {
+            app_data->current_vfo = vfo;
+            gtk_frame_set_label(GTK_FRAME(app_data->spectrum_frame),
+                                vfo == 0 ? "VFO A" : "VFO B");
+        }
+
+        gboolean filter_changed = FALSE;
+        if (filter_str[0] && strcmp(filter_str, app_data->current_filter) != 0) {
+            strncpy(app_data->current_filter, filter_str, sizeof(app_data->current_filter) - 1);
+            app_data->current_filter[sizeof(app_data->current_filter) - 1] = '\0';
+            filter_changed = TRUE;
+        }
+
+        if (freq_changed || mode_changed || filter_changed) {
+            char freq_fmt[32];
+            char mode_filter_str[64];
+            snprintf(freq_fmt, sizeof(freq_fmt), "%.6f MHz", app_data->center_freq_hz / 1e6);
+            if (app_data->demod_was_active) {
+                int dm_bw = atomic_load(&app_data->demod_bw_hz);
+                int dm_mode = atomic_load(&app_data->demod_mode);
+                static const char *demod_mode_names[] = {"AM", "USB", "LSB", "CW"};
+                const char *dm_name = (dm_mode >= 0 && dm_mode <= 3)
+                    ? demod_mode_names[dm_mode] : "?";
+                if (dm_bw >= 1000)
+                    snprintf(mode_filter_str, sizeof(mode_filter_str),
+                             "%s %s | Demod: %s %.1fk",
+                             usb_device_mode_name(app_data->current_mode),
+                             app_data->current_filter, dm_name, dm_bw / 1000.0);
+                else
+                    snprintf(mode_filter_str, sizeof(mode_filter_str),
+                             "%s %s | Demod: %s %d Hz",
+                             usb_device_mode_name(app_data->current_mode),
+                             app_data->current_filter, dm_name, dm_bw);
+            } else {
+                snprintf(mode_filter_str, sizeof(mode_filter_str), "%s %s",
+                         usb_device_mode_name(app_data->current_mode),
+                         app_data->current_filter);
             }
-            if (cat_ok) {
+            spectrum_widget_set_overlay(SPECTRUM_WIDGET(app_data->spectrum),
+                                        freq_fmt, mode_filter_str);
 
-                gboolean freq_changed = (freq > 0 && freq != app_data->center_freq_hz);
-                gboolean mode_changed = (mode != app_data->current_mode);
-                gboolean vfo_changed = (vfo != app_data->current_vfo);
-
-                if (freq_changed) {
-                    app_data->center_freq_hz = (int)freq;
-
-                    // Update spectrum display
-                    spectrum_widget_set_center_freq(SPECTRUM_WIDGET(app_data->spectrum), app_data->center_freq_hz);
-                }
-
-                if (mode_changed) {
-                    app_data->current_mode = mode;
-                }
-
-                if (vfo_changed) {
-                    app_data->current_vfo = vfo;
-
-                    // Update spectrum frame label
-                    gtk_frame_set_label(GTK_FRAME(app_data->spectrum_frame),
-                                        vfo == 0 ? "VFO A" : "VFO B");
-                }
-
-                // Read filter bandwidth (may have changed even if mode didn't)
-                char filter_str[16] = "";
-                gboolean filter_changed = FALSE;
-                int filter_ok = 0;
-                if (app_data->cat_client && cat_client_is_connected(app_data->cat_client)) {
-                    filter_ok = (cat_client_get_filter_bw(app_data->cat_client, app_data->current_mode,
-                                                          filter_str, sizeof(filter_str)) == 0);
-                } else {
-                    filter_ok = (cat_control_get_filter_bw(app_data->cat, app_data->current_mode,
-                                                            filter_str, sizeof(filter_str)) == 0);
-                }
-                if (filter_ok) {
-                    if (strcmp(filter_str, app_data->current_filter) != 0) {
-                        strncpy(app_data->current_filter, filter_str, sizeof(app_data->current_filter) - 1);
-                        app_data->current_filter[sizeof(app_data->current_filter) - 1] = '\0';
-                        filter_changed = TRUE;
-                    }
-                }
-
-                // Update overlay with frequency, mode and filter
-                if (freq_changed || mode_changed || filter_changed) {
-                    char freq_str[32];
-                    char mode_filter_str[64];
-                    snprintf(freq_str, sizeof(freq_str), "%.6f MHz", app_data->center_freq_hz / 1e6);
-                    if (app_data->demod_was_active) {
-                        int dm_bw = atomic_load(&app_data->demod_bw_hz);
-                        int dm_mode = atomic_load(&app_data->demod_mode);
-                        static const char *demod_mode_names[] = {"AM", "USB", "LSB", "CW"};
-                        const char *dm_name = (dm_mode >= 0 && dm_mode <= 3)
-                            ? demod_mode_names[dm_mode] : "?";
-                        if (dm_bw >= 1000)
-                            snprintf(mode_filter_str, sizeof(mode_filter_str),
-                                     "%s %s | Demod: %s %.1fk",
-                                     usb_device_mode_name(app_data->current_mode),
-                                     app_data->current_filter, dm_name, dm_bw / 1000.0);
-                        else
-                            snprintf(mode_filter_str, sizeof(mode_filter_str),
-                                     "%s %s | Demod: %s %d Hz",
-                                     usb_device_mode_name(app_data->current_mode),
-                                     app_data->current_filter, dm_name, dm_bw);
-                    } else {
-                        snprintf(mode_filter_str, sizeof(mode_filter_str), "%s %s",
-                                 usb_device_mode_name(app_data->current_mode),
-                                 app_data->current_filter);
-                    }
-                    spectrum_widget_set_overlay(SPECTRUM_WIDGET(app_data->spectrum),
-                                                freq_str, mode_filter_str);
-
-                    // Update waterfall bandwidth lines
-                    int offset_hz = 0;
-                    int is_resonator = 0;
-                    int bw_hz = parse_bandwidth_hz(app_data->current_filter, &offset_hz, &is_resonator);
-                    waterfall_widget_set_bandwidth(WATERFALL_WIDGET(app_data->waterfall),
-                                                   bw_hz, app_data->current_mode, offset_hz, is_resonator);
-                }
-            }
-            pthread_mutex_unlock(&app_data->cat_mutex);
+            int offset_hz = 0;
+            int is_resonator = 0;
+            int bw_hz = parse_bandwidth_hz(app_data->current_filter, &offset_hz, &is_resonator);
+            waterfall_widget_set_bandwidth(WATERFALL_WIDGET(app_data->waterfall),
+                                           bw_hz, app_data->current_mode, offset_hz, is_resonator);
         }
     }
 
@@ -730,6 +777,10 @@ static gboolean on_window_close(GtkWindow *window G_GNUC_UNUSED, gpointer user_d
 
     // Signal threads to stop
     atomic_store(&app_data->running, 0);
+
+    // Stop CAT polling thread
+    if (atomic_exchange(&app_data->cat_poll_running, 0))
+        pthread_join(app_data->cat_poll_thread, NULL);
 
     if (app_data->iq_input_port > 0) {
         // Network mode: stop IQ client
@@ -1124,6 +1175,15 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
         }
     }
 
+    // Start CAT polling thread (offloads serial/network I/O from GTK main thread)
+    if (app_data->cat || app_data->cat_client) {
+        atomic_store(&app_data->cat_poll_running, 1);
+        if (pthread_create(&app_data->cat_poll_thread, NULL, cat_poll_thread_func, app_data) != 0) {
+            fprintf(stderr, "Failed to create CAT poll thread\n");
+            atomic_store(&app_data->cat_poll_running, 0);
+        }
+    }
+
     // Start display refresh timer (~30 FPS)
     g_timeout_add(33, refresh_display, app_data);
 
@@ -1153,6 +1213,7 @@ static void shutdown_app(GtkApplication *gtk_app G_GNUC_UNUSED, gpointer user_da
     pthread_mutex_destroy(&app_data->cat_mutex);
     bandplan_free(&app_data->bandplan);
     g_mutex_clear(&app_data->spectrum_mutex);
+    g_mutex_clear(&app_data->cat_cache_mutex);
 }
 
 static void print_usage(const char *prog) {
@@ -1189,6 +1250,7 @@ int main(int argc, char *argv[]) {
     // Initialize app data
     memset(&app, 0, sizeof(app));
     g_mutex_init(&app.spectrum_mutex);
+    g_mutex_init(&app.cat_cache_mutex);
     pthread_mutex_init(&app.cat_mutex, NULL);
     app.center_freq_hz = 15300000;  // 15.3 MHz default
     app.fullscreen = FALSE;
