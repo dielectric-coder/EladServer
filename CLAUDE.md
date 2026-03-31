@@ -212,7 +212,7 @@ On connection, the server sends a 16-byte header:
 After the header, the server streams continuous raw IQ data:
 - Format: `int32_t I, int32_t Q` pairs (8 bytes per sample, little-endian)
 - Chunks: 12288 bytes per USB transfer (1536 IQ samples)
-- Clients that can't keep up are disconnected
+- 1MB SO_SNDBUF per client; transient backpressure drops chunks, sustained backpressure (50 consecutive drops) disconnects
 
 ### Usage
 

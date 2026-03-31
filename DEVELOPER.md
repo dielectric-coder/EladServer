@@ -286,7 +286,7 @@ Raspberry Pi.
 - `pthread_mutex_t` (`fd_mutex`) protects IQ client socket fd between recv thread and stop
 - `pthread_mutex_t` (`clients_mutex`) protects client fd arrays in both TCP servers; add/remove are atomic with count check
 - TCP server client handlers own their fd lifecycle (close on exit); server stop uses `shutdown()` only to avoid double-close
-- IQ broadcast uses `MSG_DONTWAIT` to prevent blocking the data pipeline on slow clients
+- IQ broadcast uses `MSG_DONTWAIT` with 1MB `SO_SNDBUF`; transient `EAGAIN` drops the chunk instead of disconnecting (50 consecutive drops = disconnect)
 
 ## Build System
 

@@ -12,6 +12,9 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
+// Disconnect after this many consecutive dropped chunks
+#define IQ_DROP_LIMIT 50
+
 struct iq_server {
     int listen_fd;
     int port;
@@ -22,6 +25,7 @@ struct iq_server {
 
     // Client sockets protected by mutex
     int client_fds[IQ_SERVER_MAX_CLIENTS];
+    int client_drops[IQ_SERVER_MAX_CLIENTS];  // Consecutive EAGAIN count
     pthread_mutex_t clients_mutex;
     int client_count;
 };
@@ -31,8 +35,10 @@ iq_server_t *iq_server_new(void) {
     if (!server) return NULL;
     server->listen_fd = -1;
     pthread_mutex_init(&server->clients_mutex, NULL);
-    for (int i = 0; i < IQ_SERVER_MAX_CLIENTS; i++)
+    for (int i = 0; i < IQ_SERVER_MAX_CLIENTS; i++) {
         server->client_fds[i] = -1;
+        server->client_drops[i] = 0;
+    }
     return server;
 }
 
@@ -70,6 +76,7 @@ static int add_client_fd(iq_server_t *server, int fd) {
     for (int i = 0; i < IQ_SERVER_MAX_CLIENTS; i++) {
         if (server->client_fds[i] == -1) {
             server->client_fds[i] = fd;
+            server->client_drops[i] = 0;
             server->client_count++;
             pthread_mutex_unlock(&server->clients_mutex);
             return 0;
@@ -104,6 +111,10 @@ static void *accept_thread_func(void *arg) {
         // Disable Nagle for low-latency streaming
         int flag = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+        // Large send buffer to absorb bursts (1MB; 192kHz IQ = 1.5 MB/s)
+        int sndbuf = 1024 * 1024;
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
 
         // Send protocol header (before adding to client list, so broadcast won't block on it)
         if (send_header(client_fd, server->sample_rate) != 0) {
@@ -229,7 +240,16 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
             if (n < 0) {
                 if (errno == EINTR)
                     continue;
-                // EAGAIN/EWOULDBLOCK means client can't keep up - disconnect it
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // Send buffer full - drop this chunk, track consecutive drops
+                    server->client_drops[i]++;
+                    if (server->client_drops[i] >= IQ_DROP_LIMIT) {
+                        fprintf(stderr, "IQ server: client too slow, disconnecting\n");
+                        failed = 1;
+                    }
+                    break;
+                }
+                // Real error (connection reset, broken pipe, etc.)
                 failed = 1;
                 break;
             }
@@ -240,10 +260,14 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
             total += n;
         }
 
+        if (total > 0)
+            server->client_drops[i] = 0;  // Successful send resets drop counter
+
         if (failed) {
             fprintf(stderr, "IQ server: client disconnected\n");
             close(fd);
             server->client_fds[i] = -1;
+            server->client_drops[i] = 0;
             server->client_count--;
         }
     }
