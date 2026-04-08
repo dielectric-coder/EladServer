@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "iq_server.h"
+#include "app_state.h"  // USB_BUFFER_SIZE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,17 +11,11 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <pthread.h>
-#include <sched.h>
 #include <stdatomic.h>
 
-// Disconnect after this many consecutive dropped chunks.
-// At 192kHz IQ (125 chunks/sec), 625 drops ≈ 5 seconds of stall tolerance.
-#define IQ_DROP_LIMIT 625
-
-// Max send retries after a partial write (each yields the CPU briefly).
-// At ~1.5 MB/s drain rate a 12 KB remainder clears in <10 ms; 50 yields
-// of ~100 µs each ≈ 5 ms worst-case — well under the 8 ms chunk period.
-#define IQ_SEND_RETRIES 50
+// Spillover buffer: 4 chunks ≈ 32 ms at 192 kHz.  Absorbs transient
+// network stalls without blocking the USB thread or dropping data.
+#define IQ_SPILL_MAX (USB_BUFFER_SIZE * 4)
 
 struct iq_server {
     int listen_fd;
@@ -32,7 +27,8 @@ struct iq_server {
 
     // Client sockets protected by mutex
     int client_fds[IQ_SERVER_MAX_CLIENTS];
-    int client_drops[IQ_SERVER_MAX_CLIENTS];  // Consecutive EAGAIN count
+    uint8_t client_spill[IQ_SERVER_MAX_CLIENTS][IQ_SPILL_MAX];
+    int client_spill_len[IQ_SERVER_MAX_CLIENTS];
     pthread_mutex_t clients_mutex;
     int client_count;
 };
@@ -44,7 +40,7 @@ iq_server_t *iq_server_new(void) {
     pthread_mutex_init(&server->clients_mutex, NULL);
     for (int i = 0; i < IQ_SERVER_MAX_CLIENTS; i++) {
         server->client_fds[i] = -1;
-        server->client_drops[i] = 0;
+        server->client_spill_len[i] = 0;
     }
     return server;
 }
@@ -83,7 +79,7 @@ static int add_client_fd(iq_server_t *server, int fd) {
     for (int i = 0; i < IQ_SERVER_MAX_CLIENTS; i++) {
         if (server->client_fds[i] == -1) {
             server->client_fds[i] = fd;
-            server->client_drops[i] = 0;
+            server->client_spill_len[i] = 0;
             server->client_count++;
             pthread_mutex_unlock(&server->clients_mutex);
             return 0;
@@ -231,6 +227,25 @@ bool iq_server_is_running(iq_server_t *server) {
     return server && atomic_load(&server->running);
 }
 
+// Non-blocking send helper.  Returns bytes sent (>=0) or -1 on fatal error.
+static int nb_send(int fd, const uint8_t *buf, int len) {
+    int total = 0;
+    while (total < len) {
+        int n = send(fd, buf + total, len - total, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (n > 0) {
+            total += n;
+        } else if (n == 0) {
+            return -1;
+        } else {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return total;  // can't send more right now
+            return -1;         // real error
+        }
+    }
+    return total;
+}
+
 void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
     if (!server || !atomic_load(&server->running) || length <= 0) return;
 
@@ -240,54 +255,57 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
         int fd = server->client_fds[i];
         if (fd < 0) continue;
 
-        int total = 0;
         int failed = 0;
-        int retries = 0;
-        while (total < length) {
-            int n = send(fd, data + total, length - total, MSG_DONTWAIT | MSG_NOSIGNAL);
+
+        // Step 1: drain spillover from previous partial sends
+        if (server->client_spill_len[i] > 0) {
+            int n = nb_send(fd, server->client_spill[i],
+                            server->client_spill_len[i]);
             if (n < 0) {
-                if (errno == EINTR)
-                    continue;
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    if (total > 0) {
-                        // Partial chunk in flight — brief retry to keep stream
-                        // aligned.  The kernel drains ~12 KB in <10 ms at line
-                        // rate; each yield costs ~100 µs.
-                        if (++retries <= IQ_SEND_RETRIES) {
-                            sched_yield();
-                            continue;
-                        }
-                        // Exhausted retries — client is stuck, disconnect
-                        failed = 1;
-                    } else {
-                        // Nothing sent yet — safe to drop the whole chunk
-                        server->client_drops[i]++;
-                        if (server->client_drops[i] >= IQ_DROP_LIMIT) {
-                            fprintf(stderr, "IQ server: client too slow, disconnecting\n");
-                            failed = 1;
-                        }
-                    }
-                    break;
-                }
-                // Real error (connection reset, broken pipe, etc.)
                 failed = 1;
-                break;
+            } else if (n > 0) {
+                int rem = server->client_spill_len[i] - n;
+                if (rem > 0)
+                    memmove(server->client_spill[i],
+                            server->client_spill[i] + n, rem);
+                server->client_spill_len[i] = rem;
             }
-            if (n == 0) {
-                failed = 1;
-                break;
-            }
-            total += n;
+            // n == 0: still blocked, skip to append below
         }
 
-        if (total == length)
-            server->client_drops[i] = 0;  // Complete send resets drop counter
+        if (failed) goto disconnect;
 
+        // Step 2: try to send new chunk directly (only if spill is empty)
+        if (server->client_spill_len[i] == 0) {
+            int n = nb_send(fd, data, length);
+            if (n < 0) {
+                failed = 1;
+            } else if (n < length) {
+                // Partial — save unsent remainder into spill
+                int rem = length - n;
+                memcpy(server->client_spill[i], data + n, rem);
+                server->client_spill_len[i] = rem;
+            }
+            // n == length: fully sent, nothing to do
+        } else {
+            // Step 3: spill not yet drained — append new chunk if it fits
+            int avail = IQ_SPILL_MAX - server->client_spill_len[i];
+            if (length <= avail) {
+                memcpy(server->client_spill[i] + server->client_spill_len[i],
+                       data, length);
+                server->client_spill_len[i] += length;
+            } else {
+                // Spill overflow — client is too slow
+                fprintf(stderr, "IQ server: client too slow, disconnecting\n");
+                failed = 1;
+            }
+        }
+
+disconnect:
         if (failed) {
-            fprintf(stderr, "IQ server: client disconnected\n");
             close(fd);
             server->client_fds[i] = -1;
-            server->client_drops[i] = 0;
+            server->client_spill_len[i] = 0;
             server->client_count--;
         }
     }
