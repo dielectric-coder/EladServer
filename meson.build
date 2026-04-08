@@ -19,6 +19,7 @@ threads_dep = dependency('threads')
 math_dep = meson.get_compiler('c').find_library('m', required: true)
 gpiod_dep = dependency('libgpiod', required: false)
 json_glib_dep = dependency('json-glib-1.0')
+zmq_dep = dependency('libzmq')
 
 src_files = [
   'src/main.c',
@@ -42,7 +43,7 @@ if gpiod_dep.found()
   add_project_arguments('-DHAVE_GPIOD', language: 'c')
 endif
 
-deps = [gtk4_dep, libusb_dep, fftw3_dep, threads_dep, math_dep, json_glib_dep]
+deps = [gtk4_dep, libusb_dep, fftw3_dep, threads_dep, math_dep, json_glib_dep, zmq_dep]
 if gpiod_dep.found()
   deps += gpiod_dep
 endif
