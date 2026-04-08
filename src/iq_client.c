@@ -90,6 +90,10 @@ static int connect_to_server(const char *host, int port) {
     int flag = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
+    // Match server's 1 MB send buffer with a 1 MB receive buffer
+    int rcvbuf = 1024 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
     if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
         close(fd);
         freeaddrinfo(res);
