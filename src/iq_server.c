@@ -10,14 +10,17 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 
 // Disconnect after this many consecutive dropped chunks.
 // At 192kHz IQ (125 chunks/sec), 625 drops ≈ 5 seconds of stall tolerance.
 #define IQ_DROP_LIMIT 625
 
-// Max size of a pending partial-send buffer (one IQ chunk)
-#define IQ_PENDING_MAX 12288
+// Max send retries after a partial write (each yields the CPU briefly).
+// At ~1.5 MB/s drain rate a 12 KB remainder clears in <10 ms; 50 yields
+// of ~100 µs each ≈ 5 ms worst-case — well under the 8 ms chunk period.
+#define IQ_SEND_RETRIES 50
 
 struct iq_server {
     int listen_fd;
@@ -30,9 +33,6 @@ struct iq_server {
     // Client sockets protected by mutex
     int client_fds[IQ_SERVER_MAX_CLIENTS];
     int client_drops[IQ_SERVER_MAX_CLIENTS];  // Consecutive EAGAIN count
-    // Pending partial-send buffer per client (keeps stream aligned)
-    uint8_t client_pending[IQ_SERVER_MAX_CLIENTS][IQ_PENDING_MAX];
-    int client_pending_len[IQ_SERVER_MAX_CLIENTS];
     pthread_mutex_t clients_mutex;
     int client_count;
 };
@@ -84,7 +84,6 @@ static int add_client_fd(iq_server_t *server, int fd) {
         if (server->client_fds[i] == -1) {
             server->client_fds[i] = fd;
             server->client_drops[i] = 0;
-            server->client_pending_len[i] = 0;
             server->client_count++;
             pthread_mutex_unlock(&server->clients_mutex);
             return 0;
@@ -232,23 +231,6 @@ bool iq_server_is_running(iq_server_t *server) {
     return server && atomic_load(&server->running);
 }
 
-// Try to send buf[0..len) non-blocking.  Returns bytes sent (>=0), or -1 on fatal error.
-static int try_send(int fd, const uint8_t *buf, int len) {
-    int total = 0;
-    while (total < len) {
-        int n = send(fd, buf + total, len - total, MSG_DONTWAIT | MSG_NOSIGNAL);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return total;  // would block — return what we managed
-            return -1;         // real error
-        }
-        if (n == 0) return -1;
-        total += n;
-    }
-    return total;
-}
-
 void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
     if (!server || !atomic_load(&server->running) || length <= 0) return;
 
@@ -258,50 +240,47 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
         int fd = server->client_fds[i];
         if (fd < 0) continue;
 
+        int total = 0;
         int failed = 0;
-
-        // First, drain any pending bytes from a previous partial send
-        if (server->client_pending_len[i] > 0) {
-            int n = try_send(fd, server->client_pending[i],
-                             server->client_pending_len[i]);
+        int retries = 0;
+        while (total < length) {
+            int n = send(fd, data + total, length - total, MSG_DONTWAIT | MSG_NOSIGNAL);
             if (n < 0) {
-                failed = 1;
-            } else if (n < server->client_pending_len[i]) {
-                // Still can't finish the old chunk — compact and skip new data
-                int rem = server->client_pending_len[i] - n;
-                memmove(server->client_pending[i],
-                        server->client_pending[i] + n, rem);
-                server->client_pending_len[i] = rem;
-                server->client_drops[i]++;
-                if (server->client_drops[i] >= IQ_DROP_LIMIT) {
-                    fprintf(stderr, "IQ server: client too slow, disconnecting\n");
-                    failed = 1;
+                if (errno == EINTR)
+                    continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    if (total > 0) {
+                        // Partial chunk in flight — brief retry to keep stream
+                        // aligned.  The kernel drains ~12 KB in <10 ms at line
+                        // rate; each yield costs ~100 µs.
+                        if (++retries <= IQ_SEND_RETRIES) {
+                            sched_yield();
+                            continue;
+                        }
+                        // Exhausted retries — client is stuck, disconnect
+                        failed = 1;
+                    } else {
+                        // Nothing sent yet — safe to drop the whole chunk
+                        server->client_drops[i]++;
+                        if (server->client_drops[i] >= IQ_DROP_LIMIT) {
+                            fprintf(stderr, "IQ server: client too slow, disconnecting\n");
+                            failed = 1;
+                        }
+                    }
+                    break;
                 }
-            } else {
-                // Pending drained — can proceed with new chunk
-                server->client_pending_len[i] = 0;
+                // Real error (connection reset, broken pipe, etc.)
+                failed = 1;
+                break;
             }
+            if (n == 0) {
+                failed = 1;
+                break;
+            }
+            total += n;
         }
 
-        // Send the new chunk (only if no pending backlog)
-        if (!failed && server->client_pending_len[i] == 0) {
-            int n = try_send(fd, data, length);
-            if (n < 0) {
-                failed = 1;
-            } else if (n < length) {
-                // Partial send — save remainder to pending buffer
-                int rem = length - n;
-                if (rem <= IQ_PENDING_MAX) {
-                    memcpy(server->client_pending[i], data + n, rem);
-                    server->client_pending_len[i] = rem;
-                } else {
-                    // Shouldn't happen (chunk <= IQ_PENDING_MAX), but be safe
-                    failed = 1;
-                }
-            }
-        }
-
-        if (!failed && server->client_pending_len[i] == 0)
+        if (total == length)
             server->client_drops[i] = 0;  // Complete send resets drop counter
 
         if (failed) {
@@ -309,7 +288,6 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
             close(fd);
             server->client_fds[i] = -1;
             server->client_drops[i] = 0;
-            server->client_pending_len[i] = 0;
             server->client_count--;
         }
     }
