@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -237,16 +238,29 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
         int total = 0;
         int failed = 0;
         while (total < length) {
-            int n = send(fd, data + total, length - total, MSG_DONTWAIT | MSG_NOSIGNAL);
+            int n = send(fd, data + total, length - total,
+                         (total == 0 ? MSG_DONTWAIT : 0) | MSG_NOSIGNAL);
             if (n < 0) {
                 if (errno == EINTR)
                     continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    // Send buffer full - drop this chunk, track consecutive drops
-                    server->client_drops[i]++;
-                    if (server->client_drops[i] >= IQ_DROP_LIMIT) {
-                        fprintf(stderr, "IQ server: client too slow, disconnecting\n");
+                    if (total > 0) {
+                        // Partial chunk already in flight — must finish to
+                        // keep the client's byte stream aligned.  Switch to
+                        // a short poll and retry.
+                        struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+                        int pr = poll(&pfd, 1, 200 /* ms */);
+                        if (pr > 0)
+                            continue;  // socket writable, retry send
+                        // Timeout or error — client is stuck, disconnect
                         failed = 1;
+                    } else {
+                        // Nothing sent yet — safe to drop the whole chunk
+                        server->client_drops[i]++;
+                        if (server->client_drops[i] >= IQ_DROP_LIMIT) {
+                            fprintf(stderr, "IQ server: client too slow, disconnecting\n");
+                            failed = 1;
+                        }
                     }
                     break;
                 }
@@ -261,8 +275,8 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
             total += n;
         }
 
-        if (total > 0)
-            server->client_drops[i] = 0;  // Successful send resets drop counter
+        if (total == length)
+            server->client_drops[i] = 0;  // Complete send resets drop counter
 
         if (failed) {
             fprintf(stderr, "IQ server: client disconnected\n");
