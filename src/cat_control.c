@@ -80,6 +80,12 @@ int cat_control_open(cat_control_t *cat, const char *device) {
         return -1;
     }
 
+    // Clear O_NONBLOCK now that port is configured (was needed only for open())
+    int flags = fcntl(cat->fd, F_GETFL);
+    if (flags >= 0) {
+        fcntl(cat->fd, F_SETFL, flags & ~O_NONBLOCK);
+    }
+
     // Flush any pending data
     tcflush(cat->fd, TCIOFLUSH);
 
@@ -110,12 +116,12 @@ int cat_control_raw_command(cat_control_t *cat, const char *cmd, int cmd_len,
     // Flush input buffer
     tcflush(cat->fd, TCIFLUSH);
 
-    // Send command (retry on EINTR)
+    // Send command (retry on EINTR/EAGAIN)
     int written = 0;
     while (written < cmd_len) {
         int n = write(cat->fd, cmd + written, cmd_len - written);
         if (n < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR || errno == EAGAIN) continue;
             return -1;
         }
         written += n;

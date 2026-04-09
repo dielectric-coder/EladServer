@@ -143,18 +143,28 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
     calc_visible_range(self->spectrum_size, self->zoom_level, self->pan_offset,
                        &start_bin, &visible_bins);
 
+    // Copy bandwidth-related fields while holding the lock
+    int bw_hz = self->bandwidth_hz;
+    int bw_mode = self->current_mode;
+    int bw_sample_rate = self->sample_rate;
+    int bw_spectrum_size = self->spectrum_size;
+    int bw_center_offset = self->center_offset_hz;
+    int bw_is_resonator = self->is_resonator;
+    int dm_bw_hz = self->demod_bandwidth_hz;
+    int dm_mode = self->demod_mode;
+
     g_mutex_unlock(&self->data_mutex);
 
     // Draw bandwidth lines (red dashed) if bandwidth is set
-    if (self->bandwidth_hz > 0 && self->sample_rate > 0 && self->spectrum_size > 0) {
-        int center_bin = self->spectrum_size / 2;
+    if (bw_hz > 0 && bw_sample_rate > 0 && bw_spectrum_size > 0) {
+        int center_bin = bw_spectrum_size / 2;
         // Apply center offset (e.g., +1500 Hz for data modes)
-        int offset_bins = (int)((int64_t)self->center_offset_hz * self->spectrum_size / self->sample_rate);
+        int offset_bins = (int)((int64_t)bw_center_offset * bw_spectrum_size / bw_sample_rate);
         center_bin += offset_bins;
-        int bw_bins = (int)((int64_t)self->bandwidth_hz * self->spectrum_size / self->sample_rate);
+        int bw_bins = (int)((int64_t)bw_hz * bw_spectrum_size / bw_sample_rate);
 
         // Set up dashed line style (orange for resonator, red otherwise)
-        if (self->is_resonator) {
+        if (bw_is_resonator) {
             cairo_set_source_rgb(cr, 1.0, 0.5, 0.0);  // Orange
         } else {
             cairo_set_source_rgb(cr, 1.0, 0.0, 0.0);  // Red
@@ -168,13 +178,13 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         int num_lines = 0;
 
         // Data modes (with offset) are always symmetric around the offset center
-        if (self->center_offset_hz != 0) {
+        if (bw_center_offset != 0) {
             // Symmetric around offset center (e.g., D300, D600, D1k)
             line_bins[0] = center_bin - bw_bins / 2;
             line_bins[1] = center_bin + bw_bins / 2;
             num_lines = 2;
         } else {
-            switch (self->current_mode) {
+            switch (bw_mode) {
                 case ELAD_MODE_USB:
                     // USB: signal is above carrier - one line at upper edge
                     line_bins[0] = center_bin + bw_bins;
@@ -218,9 +228,9 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
     }
 
     // Draw demodulator bandwidth lines (yellow dashed) if active
-    if (self->demod_bandwidth_hz > 0 && self->sample_rate > 0 && self->spectrum_size > 0) {
-        int center_bin = self->spectrum_size / 2;
-        int bw_bins = (int)((int64_t)self->demod_bandwidth_hz * self->spectrum_size / self->sample_rate);
+    if (dm_bw_hz > 0 && bw_sample_rate > 0 && bw_spectrum_size > 0) {
+        int center_bin = bw_spectrum_size / 2;
+        int bw_bins = (int)((int64_t)dm_bw_hz * bw_spectrum_size / bw_sample_rate);
 
         cairo_set_source_rgb(cr, 1.0, 1.0, 0.0);  // Yellow
         cairo_set_line_width(cr, 1.5);
@@ -231,7 +241,7 @@ static void waterfall_widget_draw(GtkDrawingArea *area, cairo_t *cr,
         int line_bins[2] = {-1, -1};
         int num_lines = 0;
 
-        switch (self->demod_mode) {
+        switch (dm_mode) {
             case 1:  // DEMOD_MODE_USB
                 // USB: single line at upper edge
                 line_bins[0] = center_bin + bw_bins;
@@ -423,8 +433,10 @@ void waterfall_widget_add_line(WaterfallWidget *widget, const float *spectrum_db
 
 void waterfall_widget_set_range(WaterfallWidget *widget, float min_db, float max_db) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->min_db = min_db;
     widget->max_db = max_db;
+    g_mutex_unlock(&widget->data_mutex);
 }
 
 void waterfall_widget_clear(WaterfallWidget *widget) {
@@ -449,8 +461,12 @@ void waterfall_widget_set_zoom(WaterfallWidget *widget, int zoom_level) {
     if (zoom_level < 1) zoom_level = 1;
     if (zoom_level > 16) zoom_level = 16;
 
-    if (widget->zoom_level != zoom_level) {
-        widget->zoom_level = zoom_level;
+    g_mutex_lock(&widget->data_mutex);
+    int changed = (widget->zoom_level != zoom_level);
+    widget->zoom_level = zoom_level;
+    g_mutex_unlock(&widget->data_mutex);
+
+    if (changed) {
         // Clear waterfall when zoom changes for clean display
         waterfall_widget_clear(widget);
     }
@@ -463,8 +479,13 @@ int waterfall_widget_get_zoom(WaterfallWidget *widget) {
 
 void waterfall_widget_set_pan(WaterfallWidget *widget, int pan_offset) {
     if (!widget) return;
-    if (widget->pan_offset != pan_offset) {
-        widget->pan_offset = pan_offset;
+
+    g_mutex_lock(&widget->data_mutex);
+    int changed = (widget->pan_offset != pan_offset);
+    widget->pan_offset = pan_offset;
+    g_mutex_unlock(&widget->data_mutex);
+
+    if (changed) {
         // Clear waterfall when pan changes for clean display
         waterfall_widget_clear(widget);
     }
@@ -477,19 +498,25 @@ int waterfall_widget_get_pan(WaterfallWidget *widget) {
 
 void waterfall_widget_set_bandwidth(WaterfallWidget *widget, int bandwidth_hz, int mode, int center_offset_hz, int is_resonator) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->bandwidth_hz = bandwidth_hz;
     widget->current_mode = mode;
     widget->center_offset_hz = center_offset_hz;
     widget->is_resonator = is_resonator;
+    g_mutex_unlock(&widget->data_mutex);
 }
 
 void waterfall_widget_set_demod_bandwidth(WaterfallWidget *widget, int bandwidth_hz, int mode) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->demod_bandwidth_hz = bandwidth_hz;
     widget->demod_mode = mode;
+    g_mutex_unlock(&widget->data_mutex);
 }
 
 void waterfall_widget_set_sample_rate(WaterfallWidget *widget, int sample_rate) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->sample_rate = sample_rate;
+    g_mutex_unlock(&widget->data_mutex);
 }

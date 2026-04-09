@@ -1,6 +1,6 @@
 # Maintainer: Michel, VE2EXB <ve2exb@mikelachaine.ca>
 pkgname=elad-spectrum
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc='GTK4 spectrum analyzer and waterfall display for the Elad FDM-DUO SDR transceiver'
 arch=('x86_64' 'aarch64')

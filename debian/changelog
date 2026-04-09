@@ -1,3 +1,22 @@
+elad-spectrum (1.1.0-1) bookworm; urgency=medium
+
+  * Fix thread safety, race conditions, and resource management bugs
+  * Fix SIGPIPE crash in IQ server send_header
+  * Fix use-after-free on CAT server shutdown (joinable threads)
+  * Fix USB transfer lifetime bugs (buffer free, pending race, NULL cancel)
+  * Fix FFT spectrum data race with output mutex
+  * Fix widget setter data races (lock data_mutex in all setters)
+  * Fix waterfall draw reading fields after mutex release
+  * Fix save timeout not cancelled on shutdown
+  * Fix O_NONBLOCK left set on serial fd
+  * Fix blocking client read/send with no timeout
+  * Fix division by zero in spectrum display and FFT processor
+  * Fix GPIO error handling and partial init leak
+  * Fix frequency parsing with strtol
+  * Validate sample rate correction and set_frequency result
+
+ -- Michel, VE2EXB <ve2exb@mikelachaine.ca>  Wed, 09 Apr 2026 12:00:00 -0400
+
 elad-spectrum (1.0.0-2) bookworm; urgency=medium
 
   [ Spectrum Display ]

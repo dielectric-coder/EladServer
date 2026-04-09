@@ -68,17 +68,31 @@ rotary_encoder_t *rotary_encoder_new_with_pins(int clk_pin, int dt_pin, int sw_p
         .flags = GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP
     };
 
-    if (gpiod_line_request(encoder->clk_line, &config, 0) < 0 ||
-        gpiod_line_request(encoder->dt_line, &config, 0) < 0 ||
-        gpiod_line_request(encoder->sw_line, &config, 0) < 0) {
-        fprintf(stderr, "Encoder: Failed to request GPIO lines %d/%d/%d\n", clk_pin, dt_pin, sw_pin);
+    if (gpiod_line_request(encoder->clk_line, &config, 0) < 0) {
+        fprintf(stderr, "Encoder: Failed to request GPIO line CLK %d\n", clk_pin);
+        gpiod_chip_close(encoder->chip);
+        free(encoder);
+        return NULL;
+    }
+    if (gpiod_line_request(encoder->dt_line, &config, 0) < 0) {
+        fprintf(stderr, "Encoder: Failed to request GPIO line DT %d\n", dt_pin);
+        gpiod_line_release(encoder->clk_line);
+        gpiod_chip_close(encoder->chip);
+        free(encoder);
+        return NULL;
+    }
+    if (gpiod_line_request(encoder->sw_line, &config, 0) < 0) {
+        fprintf(stderr, "Encoder: Failed to request GPIO line SW %d\n", sw_pin);
+        gpiod_line_release(encoder->dt_line);
+        gpiod_line_release(encoder->clk_line);
         gpiod_chip_close(encoder->chip);
         free(encoder);
         return NULL;
     }
 
     // Initialize state
-    encoder->last_clk_state = gpiod_line_get_value(encoder->clk_line);
+    int initial_clk = gpiod_line_get_value(encoder->clk_line);
+    encoder->last_clk_state = (initial_clk >= 0) ? initial_clk : 0;
     encoder->last_button_time = 0;
     encoder->active_param = ENCODER_PARAM_SPECTRUM_REF;
     encoder->poll_source_id = 0;
@@ -140,10 +154,13 @@ void rotary_encoder_toggle_param(rotary_encoder_t *encoder) {
 static gboolean encoder_poll_callback(gpointer user_data) {
     rotary_encoder_t *encoder = (rotary_encoder_t *)user_data;
 
-    // Read current state
+    // Read current state (check for errors — returns -1 on failure)
     int clk_state = gpiod_line_get_value(encoder->clk_line);
     int dt_state = gpiod_line_get_value(encoder->dt_line);
     int sw_state = gpiod_line_get_value(encoder->sw_line);
+
+    if (clk_state < 0 || dt_state < 0 || sw_state < 0)
+        return G_SOURCE_CONTINUE;  // GPIO error, skip this poll
 
     // Detect rotation on CLK falling edge
     if (clk_state != encoder->last_clk_state && clk_state == 0) {

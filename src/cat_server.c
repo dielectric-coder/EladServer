@@ -23,8 +23,10 @@ struct cat_server {
     cat_client_t *cat_client;
     pthread_mutex_t *cat_mutex;
 
-    // Track client sockets for shutdown
+    // Track client sockets and threads for shutdown
     int client_fds[CAT_SERVER_MAX_CLIENTS];
+    pthread_t client_threads[CAT_SERVER_MAX_CLIENTS];
+    int client_thread_active[CAT_SERVER_MAX_CLIENTS];
     pthread_mutex_t clients_mutex;
     int client_count;
 
@@ -36,6 +38,7 @@ struct cat_server {
 typedef struct {
     cat_server_t *server;
     int client_fd;
+    int slot_index;
 } client_ctx_t;
 
 cat_server_t *cat_server_new(void) {
@@ -43,8 +46,10 @@ cat_server_t *cat_server_new(void) {
     if (!server) return NULL;
     server->listen_fd = -1;
     pthread_mutex_init(&server->clients_mutex, NULL);
-    for (int i = 0; i < CAT_SERVER_MAX_CLIENTS; i++)
+    for (int i = 0; i < CAT_SERVER_MAX_CLIENTS; i++) {
         server->client_fds[i] = -1;
+        server->client_thread_active[i] = 0;
+    }
     return server;
 }
 
@@ -74,7 +79,7 @@ void cat_server_set_demod_callback(cat_server_t *server,
     server->demod_user_data = user_data;
 }
 
-// Add client fd atomically with count check; returns 0 on success, -1 if full
+// Add client fd atomically with count check; returns slot index on success, -1 if full
 static int add_client_fd(cat_server_t *server, int fd) {
     pthread_mutex_lock(&server->clients_mutex);
     if (server->client_count >= CAT_SERVER_MAX_CLIENTS) {
@@ -86,7 +91,7 @@ static int add_client_fd(cat_server_t *server, int fd) {
             server->client_fds[i] = fd;
             server->client_count++;
             pthread_mutex_unlock(&server->clients_mutex);
-            return 0;
+            return i;
         }
     }
     // Should not reach here if client_count is accurate
@@ -106,12 +111,17 @@ static void remove_client_fd(cat_server_t *server, int fd) {
     pthread_mutex_unlock(&server->clients_mutex);
 }
 
-// Client handler thread (detached)
+// Client handler thread (joinable)
 static void *client_handler(void *arg) {
     client_ctx_t *ctx = (client_ctx_t *)arg;
     cat_server_t *server = ctx->server;
     int fd = ctx->client_fd;
+    int slot = ctx->slot_index;
     free(ctx);
+
+    // Set receive timeout so thread checks running flag periodically
+    struct timeval rcv_tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv_tv, sizeof(rcv_tv));
 
     char buf[CMD_BUF_SIZE];
     int buf_len = 0;
@@ -205,14 +215,12 @@ static void *client_handler(void *arg) {
     // Remove from tracking and close fd (only if server hasn't already closed it)
     pthread_mutex_lock(&server->clients_mutex);
     int found = 0;
-    for (int i = 0; i < CAT_SERVER_MAX_CLIENTS; i++) {
-        if (server->client_fds[i] == fd) {
-            server->client_fds[i] = -1;
-            server->client_count--;
-            found = 1;
-            break;
-        }
+    if (server->client_fds[slot] == fd) {
+        server->client_fds[slot] = -1;
+        server->client_count--;
+        found = 1;
     }
+    server->client_thread_active[slot] = 0;
     pthread_mutex_unlock(&server->clients_mutex);
     if (found)
         close(fd);
@@ -240,7 +248,8 @@ static void *accept_thread_func(void *arg) {
         }
 
         // Add to client list atomically (checks count inside lock)
-        if (add_client_fd(server, client_fd) != 0) {
+        int slot = add_client_fd(server, client_fd);
+        if (slot < 0) {
             fprintf(stderr, "CAT server: max clients reached, rejecting connection\n");
             close(client_fd);
             continue;
@@ -259,18 +268,27 @@ static void *accept_thread_func(void *arg) {
         }
         ctx->server = server;
         ctx->client_fd = client_fd;
+        ctx->slot_index = slot;
 
-        pthread_t thread;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        if (pthread_create(&thread, &attr, client_handler, ctx) != 0) {
+        // Join any previously finished thread in this slot
+        pthread_mutex_lock(&server->clients_mutex);
+        if (server->client_thread_active[slot]) {
+            pthread_mutex_unlock(&server->clients_mutex);
+            pthread_join(server->client_threads[slot], NULL);
+            pthread_mutex_lock(&server->clients_mutex);
+        }
+        server->client_thread_active[slot] = 1;
+        pthread_mutex_unlock(&server->clients_mutex);
+
+        if (pthread_create(&server->client_threads[slot], NULL, client_handler, ctx) != 0) {
             fprintf(stderr, "CAT server: failed to create client thread\n");
+            pthread_mutex_lock(&server->clients_mutex);
+            server->client_thread_active[slot] = 0;
+            pthread_mutex_unlock(&server->clients_mutex);
             remove_client_fd(server, client_fd);
             close(client_fd);
             free(ctx);
         }
-        pthread_attr_destroy(&attr);
     }
 
     fprintf(stderr, "CAT server: accept thread stopped\n");
@@ -351,6 +369,14 @@ void cat_server_stop(cat_server_t *server) {
     pthread_mutex_unlock(&server->clients_mutex);
 
     pthread_join(server->accept_thread, NULL);
+
+    // Join all client handler threads (now safe — accept thread is done)
+    for (int i = 0; i < CAT_SERVER_MAX_CLIENTS; i++) {
+        if (server->client_thread_active[i]) {
+            pthread_join(server->client_threads[i], NULL);
+            server->client_thread_active[i] = 0;
+        }
+    }
 
     fprintf(stderr, "CAT server: stopped\n");
 }

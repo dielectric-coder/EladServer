@@ -68,7 +68,10 @@ int cat_parse_if_response(const char *response, int len,
         char freq_str[12];
         strncpy(freq_str, response + 2, 11);
         freq_str[11] = '\0';
-        *freq_hz = atol(freq_str);
+        char *endptr;
+        long val = strtol(freq_str, &endptr, 10);
+        if (endptr == freq_str) return -1;  // No valid digits
+        *freq_hz = val;
     }
 
     if (mode) {

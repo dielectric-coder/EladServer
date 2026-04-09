@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <pthread.h>
 
 #define SPECTRUM_AVERAGING 3
 
@@ -27,6 +28,9 @@ struct fft_processor {
 
     // RSSI (peak power in center passband)
     float rssi_db;
+
+    // Mutex protecting spectrum_db and rssi_db (written by USB thread, read by GTK thread)
+    pthread_mutex_t output_mutex;
 };
 
 // Generate Blackman-Harris window coefficients
@@ -44,10 +48,13 @@ static void generate_window(double *window, int size) {
 }
 
 fft_processor_t *fft_processor_new(int fft_size) {
+    if (fft_size < 2) return NULL;  // Prevent division by zero in window generation
+
     fft_processor_t *fft = calloc(1, sizeof(fft_processor_t));
     if (!fft) return NULL;
 
     fft->fft_size = fft_size;
+    pthread_mutex_init(&fft->output_mutex, NULL);
     fft->sample_count = 0;
 
     // Allocate FFTW arrays
@@ -96,6 +103,8 @@ fft_processor_t *fft_processor_new(int fft_size) {
 
 void fft_processor_free(fft_processor_t *fft) {
     if (!fft) return;
+
+    pthread_mutex_destroy(&fft->output_mutex);
 
     if (fft->plan) {
         fftw_destroy_plan(fft->plan);
@@ -172,6 +181,7 @@ bool fft_processor_process(fft_processor_t *fft, const uint8_t *usb_data, int le
                 int center_end = half + 16;
 
                 // Compute average and find RSSI
+                pthread_mutex_lock(&fft->output_mutex);
                 for (int j = 0; j < fft->fft_size; j++) {
                     fft->spectrum_db[j] = fft->spectrum_accum[j] / SPECTRUM_AVERAGING;
                     fft->spectrum_accum[j] = 0.0f;  // Reset accumulator
@@ -184,6 +194,7 @@ bool fft_processor_process(fft_processor_t *fft, const uint8_t *usb_data, int le
                     }
                 }
                 fft->rssi_db = peak_db;
+                pthread_mutex_unlock(&fft->output_mutex);
                 fft->avg_count = 0;
                 fft_completed = true;
             }
@@ -198,7 +209,9 @@ bool fft_processor_process(fft_processor_t *fft, const uint8_t *usb_data, int le
 
 void fft_processor_get_spectrum_db(fft_processor_t *fft, float *output) {
     if (!fft || !output) return;
+    pthread_mutex_lock(&fft->output_mutex);
     memcpy(output, fft->spectrum_db, sizeof(float) * fft->fft_size);
+    pthread_mutex_unlock(&fft->output_mutex);
 }
 
 int fft_processor_get_size(fft_processor_t *fft) {
@@ -206,5 +219,9 @@ int fft_processor_get_size(fft_processor_t *fft) {
 }
 
 float fft_processor_get_rssi(fft_processor_t *fft) {
-    return fft ? fft->rssi_db : -200.0f;
+    if (!fft) return -200.0f;
+    pthread_mutex_lock(&fft->output_mutex);
+    float val = fft->rssi_db;
+    pthread_mutex_unlock(&fft->output_mutex);
+    return val;
 }

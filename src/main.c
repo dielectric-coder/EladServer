@@ -1198,6 +1198,12 @@ static void activate(GtkApplication *gtk_app, gpointer user_data) {
 static void shutdown_app(GtkApplication *gtk_app G_GNUC_UNUSED, gpointer user_data) {
     app_data_t *app_data = (app_data_t *)user_data;
 
+    // Cancel pending settings save timeout to prevent use-after-free
+    if (app_data->save_timeout_id > 0) {
+        g_source_remove(app_data->save_timeout_id);
+        app_data->save_timeout_id = 0;
+    }
+
     // Cleanup
 #ifdef HAVE_GPIOD
     rotary_encoder_free(app_data->encoder1);

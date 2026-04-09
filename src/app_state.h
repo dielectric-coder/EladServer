@@ -13,7 +13,10 @@
 // Sets start_bin and visible_bins; clamped_pan is the effective pan offset
 static inline void calc_visible_range(int spectrum_size, int zoom_level, int pan_offset,
                                        int *start_bin, int *visible_bins) {
+    if (zoom_level < 1) zoom_level = 1;
+    if (spectrum_size < 1) spectrum_size = 1;
     int vb = spectrum_size / zoom_level;
+    if (vb < 2) vb = 2;  // Prevent division by zero in (visible_bins - 1)
     int max_pan = (spectrum_size - vb) / 2;
     int cp = pan_offset;
     if (cp < -max_pan) cp = -max_pan;

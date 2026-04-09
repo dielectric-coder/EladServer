@@ -144,7 +144,14 @@ int usb_device_open(usb_device_t *dev) {
     res = libusb_control_transfer(dev->handle, 0xc0, 0xA2, 0x4024, 0x0151, buffer, 4, 1000);
     if (res == 4) {
         memcpy(&dev->sample_rate_correction, buffer, 4);
-        fprintf(stderr, "Sample rate correction: %d\n", dev->sample_rate_correction);
+        // Validate: correction should be small relative to base rate
+        if (dev->sample_rate_correction < -1000000 || dev->sample_rate_correction > 1000000) {
+            fprintf(stderr, "Warning: sample rate correction %d out of range, ignoring\n",
+                    dev->sample_rate_correction);
+            dev->sample_rate_correction = 0;
+        } else {
+            fprintf(stderr, "Sample rate correction: %d\n", dev->sample_rate_correction);
+        }
     }
 
     // Allocate transfer buffers
@@ -166,10 +173,25 @@ void usb_device_close(usb_device_t *dev) {
 
     usb_device_stop_streaming(dev);
 
-    // Free transfer buffers
+    // Free transfer buffers only if all transfers were successfully freed
+    // (stop_streaming sets transfers[i] = NULL when freed)
+    int all_freed = 1;
     for (int i = 0; i < NUM_TRANSFERS; i++) {
-        free(dev->transfer_buffers[i]);
-        dev->transfer_buffers[i] = NULL;
+        if (dev->transfers[i] != NULL) {
+            all_freed = 0;
+            break;
+        }
+    }
+    if (all_freed) {
+        for (int i = 0; i < NUM_TRANSFERS; i++) {
+            free(dev->transfer_buffers[i]);
+            dev->transfer_buffers[i] = NULL;
+        }
+    } else {
+        // Transfers still in-flight after timeout — leak buffers too to avoid UAF
+        fprintf(stderr, "Warning: leaking transfer buffers to avoid use-after-free\n");
+        for (int i = 0; i < NUM_TRANSFERS; i++)
+            dev->transfer_buffers[i] = NULL;
     }
 
     // Check if we need to reinit context (after disconnection)
@@ -253,6 +275,10 @@ int usb_device_set_frequency(usb_device_t *dev, long freq_hz) {
     memset(buffer, 0, sizeof(buffer));
     snprintf((char *)buffer, sizeof(buffer), "CF%11ld;", freq_hz);
     res = libusb_control_transfer(dev->handle, 0x40, 0xE1, 16, 0xF1 << 8, buffer, 16, 1000);
+    if (res != 16) {
+        fprintf(stderr, "Failed to set CAT frequency: res=%d\n", res);
+        return -1;
+    }
 
     fprintf(stderr, "Frequency set to %ld Hz\n", freq_hz);
     return 0;
@@ -344,6 +370,10 @@ int usb_device_start_streaming(usb_device_t *dev, usb_sample_callback_t callback
     atomic_store(&dev->streaming, 1);
     atomic_store(&dev->transfers_pending, 0);
 
+    // Clear transfer pointers first to prevent cancel of unallocated slots
+    for (int i = 0; i < NUM_TRANSFERS; i++)
+        dev->transfers[i] = NULL;
+
     // Allocate and submit transfers
     for (int i = 0; i < NUM_TRANSFERS; i++) {
         dev->transfers[i] = libusb_alloc_transfer(0);
@@ -364,13 +394,14 @@ int usb_device_start_streaming(usb_device_t *dev, usb_sample_callback_t callback
             2000
         );
 
+        atomic_fetch_add(&dev->transfers_pending, 1);
         res = libusb_submit_transfer(dev->transfers[i]);
         if (res != 0) {
             fprintf(stderr, "Failed to submit transfer: %s\n", libusb_strerror(res));
+            atomic_fetch_sub(&dev->transfers_pending, 1);
             usb_device_stop_streaming(dev);
             return -1;
         }
-        atomic_fetch_add(&dev->transfers_pending, 1);
     }
 
     fprintf(stderr, "USB transfers submitted\n");
@@ -404,7 +435,8 @@ void usb_device_stop_streaming(usb_device_t *dev) {
             fprintf(stderr, "Warning: %d transfers still pending after timeout, "
                     "skipping free to avoid use-after-free\n",
                     atomic_load(&dev->transfers_pending));
-            return;  // Leak transfers rather than risk use-after-free
+            // Don't free transfers, but leave pointers so close() knows they leaked
+            return;
         }
     }
 

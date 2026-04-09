@@ -62,7 +62,7 @@ static int send_header(int fd, uint32_t sample_rate) {
 
     int total = 0;
     while (total < (int)sizeof(header)) {
-        int n = write(fd, (uint8_t *)&header + total, sizeof(header) - total);
+        int n = send(fd, (uint8_t *)&header + total, sizeof(header) - total, MSG_NOSIGNAL);
         if (n <= 0) return -1;
         total += n;
     }
@@ -118,6 +118,10 @@ static void *accept_thread_func(void *arg) {
         // Large send buffer to absorb bursts (1MB; 192kHz IQ = 1.5 MB/s)
         int sndbuf = 1024 * 1024;
         setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+
+        // Set send timeout to prevent blocking on slow clients during header send
+        struct timeval snd_tv = { .tv_sec = 2, .tv_usec = 0 };
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
 
         // Send protocol header (before adding to client list, so broadcast won't block on it)
         if (send_header(client_fd, server->sample_rate) != 0) {
@@ -296,7 +300,6 @@ void iq_server_broadcast(iq_server_t *server, const uint8_t *data, int length) {
                 server->client_spill_len[i] += length;
             } else {
                 // Spill overflow — client is too slow
-                fprintf(stderr, "IQ server: client too slow, disconnecting\n");
                 failed = 1;
             }
         }
@@ -307,6 +310,7 @@ disconnect:
             server->client_fds[i] = -1;
             server->client_spill_len[i] = 0;
             server->client_count--;
+            fprintf(stderr, "IQ server: client disconnected (slow or error)\n");
         }
     }
 

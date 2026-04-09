@@ -183,7 +183,7 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
 
         // Build spectrum path once, then fill and stroke
         double inv_range = 1.0 / range;
-        double x_scale = (double)plot_width / (visible_bins - 1);
+        double x_scale = (visible_bins > 1) ? (double)plot_width / (visible_bins - 1) : 0.0;
 
         cairo_new_path(cr);
         cairo_move_to(cr, plot_x, plot_y + plot_height);
@@ -217,7 +217,9 @@ static void spectrum_widget_draw(GtkDrawingArea *area, cairo_t *cr,
 
         if (center_bin >= start_bin && center_bin < end_bin) {
             // Center is visible - draw vertical line
-            double marker_x = plot_x + (double)(center_bin - start_bin) / (visible_bins - 1) * plot_width;
+            double marker_x = (visible_bins > 1)
+                ? plot_x + (double)(center_bin - start_bin) / (visible_bins - 1) * plot_width
+                : plot_x;
             cairo_set_line_width(cr, 2.0);
             cairo_move_to(cr, marker_x, plot_y);
             cairo_line_to(cr, marker_x, plot_y + plot_height);
@@ -343,20 +345,26 @@ void spectrum_widget_update(SpectrumWidget *widget, const float *spectrum_db, in
 
 void spectrum_widget_set_range(SpectrumWidget *widget, float min_db, float max_db) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->min_db = min_db;
     widget->max_db = max_db;
+    g_mutex_unlock(&widget->data_mutex);
     gtk_widget_queue_draw(GTK_WIDGET(widget));
 }
 
 void spectrum_widget_set_center_freq(SpectrumWidget *widget, int freq_hz) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->center_freq_hz = freq_hz;
+    g_mutex_unlock(&widget->data_mutex);
     gtk_widget_queue_draw(GTK_WIDGET(widget));
 }
 
 void spectrum_widget_set_sample_rate(SpectrumWidget *widget, int sample_rate) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->sample_rate = sample_rate;
+    g_mutex_unlock(&widget->data_mutex);
     gtk_widget_queue_draw(GTK_WIDGET(widget));
 }
 
@@ -387,7 +395,9 @@ void spectrum_widget_set_zoom(SpectrumWidget *widget, int zoom_level) {
     // Clamp to valid zoom levels
     if (zoom_level < 1) zoom_level = 1;
     if (zoom_level > 16) zoom_level = 16;
+    g_mutex_lock(&widget->data_mutex);
     widget->zoom_level = zoom_level;
+    g_mutex_unlock(&widget->data_mutex);
     gtk_widget_queue_draw(GTK_WIDGET(widget));
 }
 
@@ -398,7 +408,9 @@ int spectrum_widget_get_zoom(SpectrumWidget *widget) {
 
 void spectrum_widget_set_pan(SpectrumWidget *widget, int pan_offset) {
     if (!widget) return;
+    g_mutex_lock(&widget->data_mutex);
     widget->pan_offset = pan_offset;
+    g_mutex_unlock(&widget->data_mutex);
     gtk_widget_queue_draw(GTK_WIDGET(widget));
 }
 
